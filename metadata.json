@@ -1,0 +1,6 @@
+{
+  "name": "ST24-ProductPhoto",
+  "description": "App for photographing products and inserting them into an SVG template with a white background or brand wall, complete with QR code and text fields.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
