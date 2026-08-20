@@ -8,6 +8,8 @@ import android.net.Uri
 import android.util.Log
 import android.util.Size
 import android.view.MotionEvent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -76,6 +78,21 @@ fun CameraScreen(
     // Tap-to-focus animation state
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var focusAnimTrigger by remember { mutableStateOf(0) }
+
+    // Photo picker launcher for picking from system gallery
+    val galleryPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            isTorchOn = false
+            try {
+                cameraControl?.enableTorch(false)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            onImageCaptured(it.toString())
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (!cameraPermissionState.status.isGranted) {
@@ -317,6 +334,30 @@ fun CameraScreen(
                     .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(bottom = 32.dp, start = 24.dp, end = 24.dp)
             ) {
+                // System Gallery Photo Picker Button
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0x66000000),
+                    contentColor = Color.White,
+                    border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(56.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            galleryPickerLauncher.launch("image/*")
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddPhotoAlternate,
+                            contentDescription = "Выбрать фото из галереи",
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                }
+
                 // Shutter Button
                 ShutterButton(
                     isCapturing = isCapturing,
@@ -349,7 +390,7 @@ fun CameraScreen(
                     modifier = Modifier.align(Alignment.Center)
                 )
 
-                // Gallery Button
+                // Saved Products Gallery Button
                 Surface(
                     shape = CircleShape,
                     color = Color(0x66000000),
@@ -372,7 +413,7 @@ fun CameraScreen(
                         modifier = Modifier.fillMaxSize()
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PhotoLibrary,
+                            imageVector = Icons.Default.ShoppingBag,
                             contentDescription = "Галерея товаров",
                             modifier = Modifier.size(26.dp)
                         )

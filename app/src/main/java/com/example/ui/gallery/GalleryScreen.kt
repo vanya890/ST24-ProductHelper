@@ -3,6 +3,8 @@ package com.example.ui.gallery
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -54,6 +56,14 @@ fun GalleryScreen(
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
     val context = LocalContext.current
 
+    val galleryPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            onNavigateToEditor(it.toString())
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -71,6 +81,14 @@ fun GalleryScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { galleryPickerLauncher.launch("image/*") }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Collections,
+                            contentDescription = "Импорт из галереи"
+                        )
+                    }
                     Badge(
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,

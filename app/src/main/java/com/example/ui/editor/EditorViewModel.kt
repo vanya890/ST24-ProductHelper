@@ -110,7 +110,8 @@ class EditorViewModel(
         viewModelScope.launch {
             val bitmap = loadBitmap(imageUri)
             if (bitmap != null) {
-                val foreground = SegmentationHelper.segmentProduct(bitmap) ?: bitmap
+                val rawForeground = SegmentationHelper.segmentProduct(bitmap) ?: bitmap
+                val foreground = SegmentationHelper.enhanceStudioColorSpace(rawForeground)
                 _state.update { it.copy(foregroundBitmap = foreground, isLoading = false) }
                 resetProductPosition()
             } else {
