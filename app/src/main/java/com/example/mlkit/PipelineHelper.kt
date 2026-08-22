@@ -14,9 +14,6 @@ object PipelineHelper {
         subjectHeight: Int,
         segmentationHelper: SegmentationHelper
     ): Bitmap {
-        val origW = original.width
-        val origH = original.height
-
         // 1. Extract the crop of the original image
         val cropPixels = IntArray(subjectWidth * subjectHeight)
         original.getPixels(cropPixels, 0, subjectWidth, startX, startY, subjectWidth, subjectHeight)
@@ -38,37 +35,31 @@ object PipelineHelper {
         val upscaledCropPixels = IntArray(targetW * targetH)
         upscaledCropBitmap.getPixels(upscaledCropPixels, 0, targetW, 0, 0, targetW, targetH)
 
-        // 3. Process Mask (Flood Fill as requested)
-        // segmentationHelper.fillInteriorHoles is private, so we'll just do a quick fill here or use it if we change it to public.
-        // For now, let's just use confidences directly or make fillInteriorHoles public.
-        // Actually, we can use reflection or just copy the fill holes logic.
-        
         val upscaledMask = if (scaleFactor > 1.05f) {
             segmentationHelper.upscaleChannelBilinear(confidences, subjectWidth, subjectHeight, targetW, targetH)
         } else {
             confidences
         }
 
-        // 4. Guided Filter with upscaled original image as guide
+        // 3. Step 2: Guided Image Filter with upscaled original image as guide
         val radius = max(4, max(targetW, targetH) / 100)
-        val refinedMask = GuidedFilter.filter(upscaledCropPixels, upscaledMask, targetW, targetH, radius, 1e-4f)
+        val guidedMask = GuidedFilter.filter(upscaledCropPixels, upscaledMask, targetW, targetH, radius, 1e-3f)
 
-        // 5. Foreground Estimation (Color Decontamination)
-        val cleanPixels = ForegroundEstimator.estimate(upscaledCropPixels, refinedMask, targetW, targetH)
+        // 4. Step 1 & 3: Edge Extension (Unpremultiply & Core Laplace Diffusion)
+        val cleanPixels = ForegroundEstimator.estimate(upscaledCropPixels, guidedMask, targetW, targetH, erosionRadius = 3)
 
-        // 6. Composite
-        val outPixels = IntArray(origW * origH) // Or just return the cropped result? 
-        // Wait, the original code returns a bitmap of the SAME size as the original image, with the subject in its original place, but upscaled!
-        // Actually, `upscaleAndSmooth` in the original code takes the full-sized bitmap (which is mostly transparent except the crop) and upscales the WHOLE thing.
-        // That's very inefficient. Let's see what `upscaleAndSmooth` returns.
-        return composite(cleanPixels, refinedMask, targetW, targetH) // we'll check how it was returning.
+        // 5. Step 4: Non-linear Alpha Compression (Smoothstep)
+        val finalAlpha = segmentationHelper.compressAlphaSmoothstep(guidedMask, 0.10f, 0.90f)
+
+        // 6. Step 5: Final Composite
+        return composite(cleanPixels, finalAlpha, targetW, targetH)
     }
     
     private fun composite(cleanPixels: IntArray, mask: FloatArray, w: Int, h: Int): Bitmap {
         val out = IntArray(w * h)
         for (i in 0 until w * h) {
             val alpha = mask[i]
-            if (alpha <= 0.01f) {
+            if (alpha <= 0.001f) {
                 out[i] = Color.TRANSPARENT
             } else {
                 val aInt = (alpha * 255).toInt().coerceIn(0, 255)
@@ -79,3 +70,4 @@ object PipelineHelper {
         return Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888)
     }
 }
+

@@ -18,8 +18,9 @@ class DeepImageMattingHelper(context: Context) {
     
     init {
         try {
+            val availableCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
             val options = Interpreter.Options()
-            options.setNumThreads(4)
+            options.setNumThreads(availableCores)
             
             val assetFileDescriptor = context.assets.openFd("u2net_fp16.tflite")
             val fileInputStream = FileInputStream(assetFileDescriptor.fileDescriptor)
@@ -169,7 +170,7 @@ class DeepImageMattingHelper(context: Context) {
         val scaleX = (srcW - 1).toFloat() / (outW - 1).coerceAtLeast(1)
         val scaleY = (srcH - 1).toFloat() / (outH - 1).coerceAtLeast(1)
 
-        for (y in 0 until outH) {
+        java.util.stream.IntStream.range(0, outH).parallel().forEach { y ->
             val srcYf = y * scaleY
             val srcY = srcYf.toInt()
             val yDiff = srcYf - srcY

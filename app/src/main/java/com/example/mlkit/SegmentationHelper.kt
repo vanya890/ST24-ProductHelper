@@ -38,23 +38,36 @@ object SegmentationHelper {
                 if (mattingHelper == null) {
                     mattingHelper = DeepImageMattingHelper(context)
                 }
-                
-                val alphaMask = mattingHelper?.segment(bitmap)
+
+                val maxDim = max(bitmap.width, bitmap.height)
+                val targetMaxDim = 1024
+                val scaleFactor = if (maxDim > targetMaxDim) targetMaxDim.toFloat() / maxDim.toFloat() else 1.0f
+                val procW = (bitmap.width * scaleFactor).toInt().coerceAtLeast(1)
+                val procH = (bitmap.height * scaleFactor).toInt().coerceAtLeast(1)
+
+                val procBitmap = if (scaleFactor < 0.99f) {
+                    Bitmap.createScaledBitmap(bitmap, procW, procH, true)
+                } else {
+                    bitmap
+                }
+
+                val alphaMask = mattingHelper?.segment(procBitmap)
                 if (alphaMask != null) {
-                    val w = bitmap.width
-                    val h = bitmap.height
+                    val w = procBitmap.width
+                    val h = procBitmap.height
                     val pixels = IntArray(w * h)
-                    bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-                    
-                    val refinedMask = GuidedFilter.filter(pixels, alphaMask, w, h)
-                    val cleanPixels = unmixAndDecontaminate(pixels, refinedMask, w, h)
-                    
+                    procBitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+                    val guidedMask = GuidedFilter.filter(pixels, alphaMask, w, h, radius = 2, eps = 1e-4f)
+                    val extrapolatedRgb = ForegroundEstimator.estimate(pixels, guidedMask, w, h, erosionRadius = 3)
+                    val finalAlpha = compressAlphaSmoothstep(guidedMask, 0.05f, 0.95f)
+
                     val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                     val outPixels = IntArray(w * h)
                     for (i in 0 until w * h) {
-                        val a = refinedMask[i]
-                        if (a <= 0.005f) continue
-                        val c = cleanPixels[i] // Decontaminated RGB: zero background spill/halo!
+                        val a = finalAlpha[i]
+                        if (a <= 0.001f) continue
+                        val c = extrapolatedRgb[i] // Extrapolated clean RGB: zero background spill/halo!
                         val aInt = (a * 255f).toInt().coerceIn(0, 255)
                         outPixels[i] = android.graphics.Color.argb(aInt, android.graphics.Color.red(c), android.graphics.Color.green(c), android.graphics.Color.blue(c))
                     }
@@ -448,13 +461,17 @@ object SegmentationHelper {
             }
         }
 
-        // 3. Guided Filter for edge-guided alpha mask refinement
-        val refinedMask = GuidedFilter.filter(subPixels, filledMask, subjectWidth, subjectHeight)
+        // 3. Step 2: Guided Image Filter for edge-guided alpha mask refinement
+        val radius = maxOf(4, maxOf(subjectWidth, subjectHeight) / 100)
+        val guidedMask = GuidedFilter.filter(subPixels, filledMask, subjectWidth, subjectHeight, radius = radius, eps = 1e-3f)
 
-        // 3b. Color Decontamination (Defringing & Background Spill Removal)
-        val cleanPixels = unmixAndDecontaminate(subPixels, refinedMask, subjectWidth, subjectHeight)
+        // 4. Step 1 & 3: Edge Extension (Unpremultiply & Core Laplace Diffusion)
+        val extrapolatedRgb = ForegroundEstimator.estimate(subPixels, guidedMask, subjectWidth, subjectHeight, erosionRadius = 3)
 
-        // 4. Composite into full size
+        // 5. Step 4: Non-linear Alpha Compression (Smoothstep)
+        val finalAlpha = compressAlphaSmoothstep(guidedMask, 0.10f, 0.90f)
+
+        // 6. Step 5: Composite into full size
         val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val outPixels = IntArray(width * height)
         for (y in 0 until subjectHeight) {
@@ -467,10 +484,10 @@ object SegmentationHelper {
                 if (imgX !in 0 until width) continue
                 
                 val sIdx = subYOffset + x
-                val a = refinedMask[sIdx]
-                if (a <= 0.005f) continue
+                val a = finalAlpha[sIdx]
+                if (a <= 0.001f) continue
                 
-                val c = cleanPixels[sIdx] // Decontaminated RGB: zero background spill/halo!
+                val c = extrapolatedRgb[sIdx] // Extrapolated clean RGB: zero background spill/halo!
                 val aInt = (a * 255f).toInt().coerceIn(0, 255)
                 outPixels[imgYOffset + imgX] = android.graphics.Color.argb(aInt, android.graphics.Color.red(c), android.graphics.Color.green(c), android.graphics.Color.blue(c))
             }
@@ -479,112 +496,16 @@ object SegmentationHelper {
         return result
     }
 
-    private fun unmixAndDecontaminate(
+    /**
+     * Helper delegate for Edge Extension & Unpremultiplication.
+     */
+    fun unmixAndDecontaminate(
         pixels: IntArray,
         mask: FloatArray,
         width: Int,
         height: Int
     ): IntArray {
-        val size = width * height
-        val cleanPixels = IntArray(size)
-
-        // Step 1: Create state arrays for color propagation
-        val rChan = FloatArray(size)
-        val gChan = FloatArray(size)
-        val bChan = FloatArray(size)
-        val known = BooleanArray(size)
-
-        for (i in 0 until size) {
-            val alpha = mask[i]
-            if (alpha >= 0.80f) {
-                val px = pixels[i]
-                rChan[i] = Color.red(px).toFloat()
-                gChan[i] = Color.green(px).toFloat()
-                bChan[i] = Color.blue(px).toFloat()
-                known[i] = true
-            }
-        }
-
-        // Step 2: Multi-pass fast iterative color dilation (Push-Pull propagation)
-        // This propagates pure foreground colors outward into semi-transparent and background areas,
-        // completely replacing any original background-contaminated or dark shadow colors on the edges.
-        val nextKnown = BooleanArray(size)
-        System.arraycopy(known, 0, nextKnown, 0, size)
-
-        val passes = 8
-        for (pass in 0 until passes) {
-            var changed = false
-            for (y in 0 until height) {
-                val yOff = y * width
-                for (x in 0 until width) {
-                    val idx = yOff + x
-                    if (known[idx]) continue
-
-                    var sumR = 0f; var sumG = 0f; var sumB = 0f; var count = 0
-                    // Look at 8 neighbors
-                    for (dy in -1..1) {
-                        val ny = y + dy
-                        if (ny !in 0 until height) continue
-                        val nYOff = ny * width
-                        for (dx in -1..1) {
-                            if (dx == 0 && dy == 0) continue
-                            val nx = x + dx
-                            if (nx !in 0 until width) continue
-
-                            val nIdx = nYOff + nx
-                            if (known[nIdx]) {
-                                sumR += rChan[nIdx]
-                                sumG += gChan[nIdx]
-                                sumB += bChan[nIdx]
-                                count++
-                            }
-                        }
-                    }
-
-                    if (count > 0) {
-                        rChan[idx] = sumR / count
-                        gChan[idx] = sumG / count
-                        bChan[idx] = sumB / count
-                        nextKnown[idx] = true
-                        changed = true
-                    }
-                }
-            }
-            if (!changed) break
-            System.arraycopy(nextKnown, 0, known, 0, size)
-        }
-
-        // Step 3: Write back into cleanPixels
-        for (i in 0 until size) {
-            val alpha = mask[i]
-            if (alpha <= 0.002f) {
-                cleanPixels[i] = Color.TRANSPARENT
-            } else {
-                // If known (dilated), use the dilated pure foreground color.
-                // Otherwise (fallback), use original color.
-                if (known[i]) {
-                    val R = rChan[i].toInt().coerceIn(0, 255)
-                    val G = gChan[i].toInt().coerceIn(0, 255)
-                    val B = bChan[i].toInt().coerceIn(0, 255)
-                    cleanPixels[i] = Color.rgb(R, G, B)
-                } else {
-                    // Mathematically unmix the original color assuming a dark matte (unpremultiplication)
-                    val px = pixels[i]
-                    val origR = Color.red(px)
-                    val origG = Color.green(px)
-                    val origB = Color.blue(px)
-                    
-                    // Clamp alpha to a minimum of 0.15f to prevent division-by-zero or extreme noise near 0
-                    val denom = alpha.coerceAtLeast(0.15f)
-                    val R = (origR / denom).coerceIn(0f, 255f).toInt()
-                    val G = (origG / denom).coerceIn(0f, 255f).toInt()
-                    val B = (origB / denom).coerceIn(0f, 255f).toInt()
-                    cleanPixels[i] = Color.rgb(R, G, B)
-                }
-            }
-        }
-
-        return cleanPixels
+        return ForegroundEstimator.estimate(pixels, mask, width, height, erosionRadius = 3)
     }
 
     fun processForegroundWithDecontamination(original: Bitmap, mask: FloatBuffer): Bitmap {
@@ -600,6 +521,31 @@ object SegmentationHelper {
      * 3. 5-Tap Separable Gaussian Smoothing Kernel [1, 4, 6, 4, 1] / 16 for true organic, ultra-smooth photographic feathering
      * 4. Continuous Quintic Hermite Smootherstep Curve (C2 continuity) for Studio Polish
      */
+    /**
+     * Step 4: Non-linear Alpha Compression (Smoothstep).
+     * Cuts off noise at low threshold (0.10) and high threshold (0.90)
+     * and maps the middle interval using Hermite cubic polynomial:
+     * alpha' = clamp((alpha - 0.10) / (0.90 - 0.10), 0.0, 1.0)
+     * alpha_final = (alpha')^2 * (3 - 2 * alpha')
+     */
+    fun compressAlphaSmoothstep(
+        mask: FloatArray,
+        lowThreshold: Float = 0.10f,
+        highThreshold: Float = 0.90f
+    ): FloatArray {
+        val size = mask.size
+        val result = FloatArray(size)
+        val range = (highThreshold - lowThreshold).coerceAtLeast(0.001f)
+
+        for (i in 0 until size) {
+            val a = mask[i]
+            val t = ((a - lowThreshold) / range).coerceIn(0f, 1f)
+            result[i] = t * t * (3f - 2f * t)
+        }
+
+        return result
+    }
+
     fun refineMask(confidences: FloatArray, width: Int, height: Int): FloatArray {
         return refineMaskWithImageGuidance(confidences, null, width, height)
     }
@@ -611,418 +557,20 @@ object SegmentationHelper {
         height: Int
     ): FloatArray {
         val size = width * height
+        if (size == 0) return FloatArray(0)
 
-        // 0. Safety/Performance Guard: If the mask is a completely uninitialized uniform grey soup (more than 15% transition pixels),
-        // return it immediately to save CPU cycles and prevent worst-case performance scenarios.
-        var softCount = 0
-        for (i in 0 until size) {
-            val c = confidences[i]
-            if (c > 0.01f && c < 0.99f) {
-                softCount++
-            }
-        }
-        if (softCount > size * 0.15f) {
-            return confidences.clone()
-        }
-        
-        // 1. Calculate mask boundary complexity (perimeter-to-area ratio)
-        var areaCount = 0
-        var boundaryCount = 0
-        for (y in 0 until height) {
-            val yOffset = y * width
-            val prevYOffset = (y - 1).coerceAtLeast(0) * width
-            val nextYOffset = (y + 1).coerceAtMost(height - 1) * width
-            for (x in 0 until width) {
-                val idx = yOffset + x
-                val c = confidences[idx]
-                if (c >= 0.5f) {
-                    areaCount++
-                    
-                    // A pixel is on the boundary if at least one of its cardinal neighbors is background (< 0.5f)
-                    val prevX = (x - 1).coerceAtLeast(0)
-                    val nextX = (x + 1).coerceAtMost(width - 1)
-                    if (confidences[yOffset + prevX] < 0.5f ||
-                        confidences[yOffset + nextX] < 0.5f ||
-                        confidences[prevYOffset + x] < 0.5f ||
-                        confidences[nextYOffset + x] < 0.5f) {
-                        boundaryCount++
-                    }
-                }
-            }
-        }
-        val complexity = if (areaCount > 0) boundaryCount.toFloat() / areaCount.toFloat() else 0f
-
-        // 2. Select optimal morphological closing radius:
-        // Smooth rounded objects (earbuds cases, circles, cosmetics) get closing/pre-smoothing
-        val optimalRadius = when {
-            complexity <= 0.08f -> 3
-            else -> 0
-        }
-
-        // A. Topo-Geometric Healing: Apply hole-filling and morphological closing
-        val closed = if (optimalRadius > 0) {
-            val healed = fillInteriorHoles(confidences, width, height)
-            morphologicalClosing(healed, width, height, radius = optimalRadius)
+        val guided = if (pixels != null) {
+            GuidedFilter.filter(pixels, confidences, width, height, radius = 2, eps = 1e-4f)
         } else {
             confidences
         }
 
-        // B. Photoshop-Style Adaptive Smart Edge Pre-Smoothing
-        val smoothRadius = when {
-            complexity <= 0.08f -> {
-                when {
-                    width >= 1024 || height >= 1024 -> 4
-                    width >= 512 || height >= 512 -> 3
-                    else -> 2
-                }
-            }
-            else -> 0
-        }
-        val smoothed = if (smoothRadius > 0) preSmoothMask(closed, width, height, smoothRadius) else closed
-
-        val cleaned = FloatArray(size)
-
-        // 1. Adaptive Boundary Refinement & Hole Restoration
-        for (y in 0 until height) {
-            val yOffset = y * width
-            val prevYOffset = (y - 1).coerceAtLeast(0) * width
-            val nextYOffset = (y + 1).coerceAtMost(height - 1) * width
-
-            for (x in 0 until width) {
-                val idx = yOffset + x
-                val c = smoothed[idx]
-
-                if (c in 0.01f..0.99f) {
-                    val prevX = (x - 1).coerceAtLeast(0)
-                    val nextX = (x + 1).coerceAtMost(width - 1)
-
-                    val l = smoothed[yOffset + prevX]
-                    val r = smoothed[yOffset + nextX]
-                    val t = smoothed[prevYOffset + x]
-                    val b = smoothed[nextYOffset + x]
-
-                    val tl = smoothed[prevYOffset + prevX]
-                    val tr = smoothed[prevYOffset + nextX]
-                    val bl = smoothed[nextYOffset + prevX]
-                    val br = smoothed[nextYOffset + nextX]
-
-                    val maxN = max(max(max(l, r), max(t, b)), max(max(tl, tr), max(bl, br)))
-                    val minN = min(min(min(l, r), min(t, b)), min(min(tl, tr), min(bl, br)))
-                    val avgN = (l + r + t + b + tl + tr + bl + br) / 8f
-
-                    if (minN >= 0.50f) {
-                        // Interior region / specular highlight: restore solid confidence
-                        cleaned[idx] = max(c, (c * 0.3f + maxN * 0.7f)).coerceIn(0f, 1f)
-                    } else if (maxN <= 0.05f) {
-                        // Background noise: suppress halo
-                        cleaned[idx] = min(c, avgN * 0.5f).coerceIn(0f, 1f)
-                    } else {
-                        // Edge region: preserve symmetric boundary position to maximize Boundary F1
-                        val contrast = maxN - minN
-                        val rawWeight = (0.7f + contrast * 0.28f).coerceIn(0f, 1f)
-                        cleaned[idx] = (c * rawWeight + avgN * (1f - rawWeight)).coerceIn(0f, 1f)
-                    }
-                } else {
-                    cleaned[idx] = c
-                }
-            }
-        }
-
-        // 2. Image-Guided Joint Bilateral & Closed-Form Subpixel Color Matting Solver
-        val guided = FloatArray(size)
-        if (pixels != null) {
-            for (y in 0 until height) {
-                val yOffset = y * width
-                for (x in 0 until width) {
-                    val idx = yOffset + x
-                    val centerConf = cleaned[idx]
-
-                    if (centerConf in 0.002f..0.998f) {
-                        val centerPx = pixels[idx]
-                        val cR = Color.red(centerPx).toFloat()
-                        val cG = Color.green(centerPx).toFloat()
-                        val cB = Color.blue(centerPx).toFloat()
-
-                        // Solve Local Closed-Form color-guided alpha matting
-                        var fgR = 0f; var fgG = 0f; var fgB = 0f; var fgW = 0f
-                        var bgR = 0f; var bgG = 0f; var bgB = 0f; var bgW = 0f
-
-                        for (dy in -3..3) {
-                            val ny = (y + dy).coerceIn(0, height - 1)
-                            val nYOffset = ny * width
-                            for (dx in -3..3) {
-                                val nx = (x + dx).coerceIn(0, width - 1)
-                                val nIdx = nYOffset + nx
-                                val conf = cleaned[nIdx]
-                                val nPx = pixels[nIdx]
-                                val distSq = (dx * dx + dy * dy).toFloat() + 0.1f
-                                val w = 1f / distSq
-
-                                if (conf >= 0.90f) {
-                                    fgR += Color.red(nPx) * w
-                                    fgG += Color.green(nPx) * w
-                                    fgB += Color.blue(nPx) * w
-                                    fgW += w
-                                } else if (conf <= 0.10f) {
-                                    bgR += Color.red(nPx) * w
-                                    bgG += Color.green(nPx) * w
-                                    bgB += Color.blue(nPx) * w
-                                    bgW += w
-                                }
-                            }
-                        }
-
-                        if (fgW > 0f && bgW > 0f) {
-                            val avgFgR = fgR / fgW
-                            val avgFgG = fgG / fgW
-                            val avgFgB = fgB / fgW
-
-                            val avgBgR = bgR / bgW
-                            val avgBgG = bgG / bgW
-                            val avgBgB = bgB / bgW
-
-                            val vR = avgFgR - avgBgR
-                            val vG = avgFgG - avgBgG
-                            val vB = avgFgB - avgBgB
-                            val lenSq = vR * vR + vG * vG + vB * vB
-
-                            if (lenSq > 400f) {
-                                val dR = cR - avgBgR
-                                val dG = cG - avgBgG
-                                val dB = cB - avgBgB
-
-                                val proj = (dR * vR + dG * vG + dB * vB) / lenSq
-                                val colorMatte = proj.coerceIn(0f, 1f)
-
-                                // Dynamic blend: higher weight to matting on high-contrast edges
-                                val mattingWeight = 0.85f * (lenSq / (lenSq + 800f))
-                                val finalConf = (centerConf * (1f - mattingWeight) + colorMatte * mattingWeight).coerceIn(0f, 1f)
-
-                                // Dynamic Contour Calibration (Erosion): Pull edge 0.8px inward on high contrast to prevent background halo
-                                val edgeShrink = 0.045f * mattingWeight
-                                guided[idx] = (finalConf - edgeShrink).coerceIn(0f, 1f)
-                            } else {
-                                // Fallback: Standard Joint Bilateral Filtering
-                                var confSum = 0f
-                                var weightSum = 0f
-                                for (dy in -2..2) {
-                                    val ny = (y + dy).coerceIn(0, height - 1)
-                                    val nYOffset = ny * width
-                                    for (dx in -2..2) {
-                                        val nx = (x + dx).coerceIn(0, width - 1)
-                                        val nIdx = nYOffset + nx
-                                        val nPx = pixels[nIdx]
-
-                                        val spatialDistSq = (dx * dx + dy * dy).toFloat()
-                                        val spatialW = kotlin.math.exp(-spatialDistSq / 4.5f)
-
-                                        val dR_bilat = Color.red(nPx) - cR
-                                        val dG_bilat = Color.green(nPx) - cG
-                                        val dB_bilat = Color.blue(nPx) - cB
-                                        val colorDistSq = (dR_bilat * dR_bilat + dG_bilat * dG_bilat + dB_bilat * dB_bilat).toFloat()
-                                        val colorW = kotlin.math.exp(-colorDistSq / 1800f)
-
-                                        val w = spatialW * colorW
-                                        confSum += cleaned[nIdx] * w
-                                        weightSum += w
-                                    }
-                                }
-                                guided[idx] = if (weightSum > 0f) (confSum / weightSum).coerceIn(0f, 1f) else centerConf
-                            }
-                        } else {
-                            // Fallback: Standard Joint Bilateral Filtering
-                            var confSum = 0f
-                            var weightSum = 0f
-                            for (dy in -2..2) {
-                                val ny = (y + dy).coerceIn(0, height - 1)
-                                val nYOffset = ny * width
-                                for (dx in -2..2) {
-                                    val nx = (x + dx).coerceIn(0, width - 1)
-                                    val nIdx = nYOffset + nx
-                                    val nPx = pixels[nIdx]
-
-                                    val spatialDistSq = (dx * dx + dy * dy).toFloat()
-                                    val spatialW = kotlin.math.exp(-spatialDistSq / 4.5f)
-
-                                    val dR_bilat = Color.red(nPx) - cR
-                                    val dG_bilat = Color.green(nPx) - cG
-                                    val dB_bilat = Color.blue(nPx) - cB
-                                    val colorDistSq = (dR_bilat * dR_bilat + dG_bilat * dG_bilat + dB_bilat * dB_bilat).toFloat()
-                                    val colorW = kotlin.math.exp(-colorDistSq / 1800f)
-
-                                    val w = spatialW * colorW
-                                    confSum += cleaned[nIdx] * w
-                                    weightSum += w
-                                }
-                            }
-                            guided[idx] = if (weightSum > 0f) (confSum / weightSum).coerceIn(0f, 1f) else centerConf
-                        }
-                    } else {
-                        guided[idx] = centerConf
-                    }
-                }
-            }
-        } else {
-            System.arraycopy(cleaned, 0, guided, 0, size)
-        }
-
-        // 3. Subpixel Edge Anti-Aliasing (Directional gradient & 9-point subpixel filter)
-        val antialiased = FloatArray(size)
-        for (y in 0 until height) {
-            val yOffset = y * width
-            val prevYOffset = (y - 1).coerceAtLeast(0) * width
-            val nextYOffset = (y + 1).coerceAtMost(height - 1) * width
-
-            for (x in 0 until width) {
-                val idx = yOffset + x
-                val center = guided[idx]
-
-                if (center in 0.01f..0.99f) {
-                    val prevX = (x - 1).coerceAtLeast(0)
-                    val nextX = (x + 1).coerceAtMost(width - 1)
-
-                    val left = guided[yOffset + prevX]
-                    val right = guided[yOffset + nextX]
-                    val top = guided[prevYOffset + x]
-                    val bottom = guided[nextYOffset + x]
-
-                    val topLeft = guided[prevYOffset + prevX]
-                    val topRight = guided[prevYOffset + nextX]
-                    val bottomLeft = guided[nextYOffset + prevX]
-                    val bottomRight = guided[nextYOffset + nextX]
-
-                    val gx = (topRight + 2f * right + bottomRight) - (topLeft + 2f * left + bottomLeft)
-                    val gy = (bottomLeft + 2f * bottom + bottomRight) - (topLeft + 2f * top + topRight)
-                    val gradMag = sqrt((gx * gx + gy * gy).toDouble()).toFloat()
-
-                    if (gradMag > 0.08f) {
-                        val directSum = left + right + top + bottom
-                        val cornerSum = topLeft + topRight + bottomLeft + bottomRight
-                        val subpixel = (center * 4f + directSum * 2f + cornerSum * 1f) / 16f
-                        antialiased[idx] = subpixel
-                    } else {
-                        antialiased[idx] = center
-                    }
-                } else {
-                    antialiased[idx] = center
-                }
-            }
-        }
-
-        // 4. Curvature-Driven Geometric Flow (Boundary Regularization to remove jagged "staircase" and sharp noisy corners)
-        val curvatureFiltered = FloatArray(size)
-        System.arraycopy(antialiased, 0, curvatureFiltered, 0, size)
-
-        val iterations = 6
-        val dt = 0.20f
-        val tempCurvature = FloatArray(size)
-
-        for (iter in 0 until iterations) {
-            System.arraycopy(curvatureFiltered, 0, tempCurvature, 0, size)
-            for (y in 1 until height - 1) {
-                val yOff = y * width
-                val prevY = (y - 1) * width
-                val nextY = (y + 1) * width
-                for (x in 1 until width - 1) {
-                    val idx = yOff + x
-                    val center = tempCurvature[idx]
-
-                    if (center > 0.005f && center < 0.995f) {
-                        val ph_r = tempCurvature[yOff + x + 1]
-                        val ph_l = tempCurvature[yOff + x - 1]
-                        val ph_t = tempCurvature[prevY + x]
-                        val ph_b = tempCurvature[nextY + x]
-
-                        val ph_tr = tempCurvature[prevY + x + 1]
-                        val ph_tl = tempCurvature[prevY + x - 1]
-                        val ph_br = tempCurvature[nextY + x + 1]
-                        val ph_bl = tempCurvature[nextY + x - 1]
-
-                        val ph_x = (ph_r - ph_l) / 2f
-                        val ph_y = (ph_t - ph_b) / 2f
-
-                        val ph_xx = ph_r - 2f * center + ph_l
-                        val ph_yy = ph_t - 2f * center + ph_b
-                        val ph_xy = (ph_tr - ph_tl - ph_br + ph_bl) / 4f
-
-                        val gradSq = ph_x * ph_x + ph_y * ph_y + 1e-5f
-
-                        val curvatureMotion = (ph_xx * ph_y * ph_y - 2f * ph_x * ph_y * ph_xy + ph_yy * ph_x * ph_x) / gradSq
-                        curvatureFiltered[idx] = (center + dt * curvatureMotion).coerceIn(0f, 1f)
-                    }
-                }
-            }
-        }
-
-        // 5. 3-Tap Separable Subpixel Gaussian Feathering (sigma = 0.6f)
-        // Softens boundary transition regions to make edges perfectly smooth and organic.
-        val blurred = FloatArray(size)
-        val tempBlur = FloatArray(size)
-        val gaussianWeights = floatArrayOf(0.18f, 0.64f, 0.18f)
-
-        // Horizontal Pass
-        for (y in 0 until height) {
-            val yOff = y * width
-            for (x in 0 until width) {
-                val idx = yOff + x
-                val centerVal = curvatureFiltered[idx]
-                if (centerVal > 0.001f && centerVal < 0.999f) {
-                    var sum = 0f
-                    var wSum = 0f
-                    for (dx in -1..1) {
-                        val nx = (x + dx).coerceIn(0, width - 1)
-                        val w = gaussianWeights[dx + 1]
-                        sum += curvatureFiltered[yOff + nx] * w
-                        wSum += w
-                    }
-                    tempBlur[idx] = if (wSum > 0f) sum / wSum else centerVal
-                } else {
-                    tempBlur[idx] = centerVal
-                }
-            }
-        }
-
-        // Vertical Pass
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                val idx = y * width + x
-                val centerVal = tempBlur[idx]
-                if (centerVal > 0.001f && centerVal < 0.999f) {
-                    var sum = 0f
-                    var wSum = 0f
-                    for (dy in -1..1) {
-                        val ny = (y + dy).coerceIn(0, height - 1)
-                        val w = gaussianWeights[dy + 1]
-                        sum += tempBlur[ny * width + x] * w
-                        wSum += w
-                    }
-                    blurred[idx] = if (wSum > 0f) sum / wSum else centerVal
-                } else {
-                    blurred[idx] = centerVal
-                }
-            }
-        }
-
-        // 6. Symmetric Quintic Hermite Smootherstep Calibration (feathering preservation)
-        val finalMask = FloatArray(size)
-        val lowCut = 0.015f
-        val highCut = 0.985f
-        val range = highCut - lowCut
-
-        for (i in 0 until size) {
-            val raw = blurred[i]
-            if (raw <= lowCut) {
-                finalMask[i] = 0f
-            } else if (raw >= highCut) {
-                finalMask[i] = 1f
-            } else {
-                val t = (raw - lowCut) / range
-                finalMask[i] = t * t * t * (t * (t * 6f - 15f) + 10f)
-            }
-        }
-
-        return finalMask
+        return compressAlphaSmoothstep(guided, 0.05f, 0.95f)
     }
+
+
+
+
 
     private fun preSmoothMask(mask: FloatArray, width: Int, height: Int, radius: Int): FloatArray {
         if (radius <= 0) return mask

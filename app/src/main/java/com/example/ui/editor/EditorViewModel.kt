@@ -48,7 +48,6 @@ data class EditorState(
     val originalImageUri: String = "",
     val foregroundBitmap: Bitmap? = null,
     val finalBitmap: Bitmap? = null,
-    
     val isLocked: Boolean = false,
     
     val showName: Boolean = true,
@@ -195,9 +194,18 @@ class EditorViewModel(
         viewModelScope.launch {
             val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { loadBitmap(imageUri) }
             if (bitmap != null) {
-                val rawForeground = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { SegmentationHelper.segmentProduct(bitmap, applicationContext) } ?: bitmap
-                val foreground = SegmentationHelper.enhanceStudioColorSpace(rawForeground)
-                _state.update { it.copy(foregroundBitmap = foreground, isLoading = false) }
+                val rawForeground = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { 
+                    SegmentationHelper.segmentProduct(bitmap, applicationContext) 
+                } ?: bitmap
+                val foreground = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    cropToTightBoundingBox(rawForeground)
+                }
+                _state.update { 
+                    it.copy(
+                        foregroundBitmap = foreground,
+                        isLoading = false
+                    ) 
+                }
                 resetProductPosition()
             } else {
                 _state.update { it.copy(isLoading = false) }
@@ -205,11 +213,35 @@ class EditorViewModel(
         }
     }
 
+    private fun cropToTightBoundingBox(bitmap: Bitmap): Bitmap {
+        val bbox = SegmentationHelper.findSubjectBoundingBox(bitmap, alphaThreshold = 10)
+        if (bbox.width() > 10 && bbox.height() > 10 && (bbox.width() < bitmap.width || bbox.height() < bitmap.height)) {
+            val pad = 4
+            val left = max(0, bbox.left - pad)
+            val top = max(0, bbox.top - pad)
+            val right = min(bitmap.width, bbox.right + pad)
+            val bottom = min(bitmap.height, bbox.bottom + pad)
+            val w = right - left
+            val h = bottom - top
+            if (w > 0 && h > 0) {
+                return Bitmap.createBitmap(bitmap, left, top, w, h)
+            }
+        }
+        return bitmap
+    }
+
     private suspend fun loadBitmap(uriString: String): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val uri = Uri.parse(uriString)
-            val inputStream = applicationContext.contentResolver.openInputStream(uri)
-            BitmapFactory.decodeStream(inputStream)
+            applicationContext.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val options = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inPremultiplied = true
+                    inDither = true
+                    inSampleSize = 1
+                }
+                BitmapFactory.decodeStream(inputStream, null, options)
+            }
         } catch (e: Exception) {
             null
         }
@@ -349,65 +381,14 @@ class EditorViewModel(
     }
 
     /**
-     * Intelligently centers and auto-scales the product to fill the studio template area.
+     * Centers and scales the cut-out product to 95% of the template width.
      */
     fun resetProductPosition() {
-        val foreground = _state.value.foregroundBitmap
-        if (foreground == null) {
-            _state.update { it.copy(productOffsetX = 0f, productOffsetY = 0f, productScale = 1f) }
-            updateFinalBitmap()
-            return
-        }
-
-        val (canvasW, canvasH) = getCanvasDimensions(_state.value.format, foreground.width, foreground.height)
-        val isLandscape = canvasW > canvasH
-        val bbox = SegmentationHelper.findSubjectBoundingBox(foreground)
-        val bboxW = bbox.width().toFloat().coerceAtLeast(10f)
-        val bboxH = bbox.height().toFloat().coerceAtLeast(10f)
-
-        // Available free studio area
-        val availW: Float
-        val availH: Float
-        val targetCenterX: Float
-        val targetCenterY: Float
-
-        if (isLandscape) {
-            availW = canvasW * 0.54f
-            availH = canvasH * 0.82f
-            targetCenterX = canvasW * 0.30f
-            targetCenterY = canvasH * 0.50f
-        } else {
-            val headerH = if (_state.value.showStoreName && _state.value.storeName.isNotEmpty()) canvasH * 0.11f else canvasH * 0.03f
-            val cardH = if (canvasW == canvasH) canvasH * 0.22f else canvasH * 0.175f
-            availW = canvasW * 0.90f
-            availH = (canvasH - headerH - cardH) * 0.92f
-            targetCenterX = canvasW * 0.50f
-            targetCenterY = headerH + (canvasH - headerH - cardH) * 0.50f
-        }
-
-        // Calculate optimal scale so bbox occupies ~85% of available space
-        val scaleX = availW / bboxW
-        val scaleY = availH / bboxH
-        val optimalScale = min(scaleX, scaleY).coerceIn(0.3f, 3.5f)
-
-        // Initial reference placement for entire foreground bitmap
-        val defaultW = if (isLandscape) canvasW * 0.58f else canvasW * 0.88f
-        val ratio = foreground.width.toFloat() / foreground.height.toFloat()
-        var baseW = defaultW
-        var baseH = baseW / ratio
-        if (isLandscape && baseH > canvasH * 0.85f) {
-            baseH = canvasH * 0.85f
-            baseW = baseH * ratio
-        }
-
-        val baseScale = optimalScale * (bboxW / baseW)
-        val normalizedScale = baseScale.coerceIn(0.5f, 3.0f)
-
         _state.update { 
             it.copy(
                 productOffsetX = 0f,
                 productOffsetY = 0f,
-                productScale = normalizedScale
+                productScale = 1f
             ) 
         }
         updateFinalBitmap()
@@ -433,46 +414,41 @@ class EditorViewModel(
 
     private fun renderCardCanvas(currentState: EditorState, targetMaxDim: Int = 1920): Bitmap? {
         val foreground = currentState.foregroundBitmap ?: return null
+
         val (width, height) = getCanvasDimensions(currentState.format, foreground.width, foreground.height, targetMaxDim)
         val isLandscape = width > height
         val productRatio = foreground.width.toFloat() / foreground.height.toFloat()
 
-        var productWidth: Float
-        var productHeight: Float
-        val left: Float
-        val top: Float
+        val availableWidth: Float
+        val availableHeight: Float
+        val centerX: Float
+        val centerY: Float
 
         if (isLandscape) {
-            val availableWidth = width * 0.58f
-            val availableHeight = height * 0.85f
-
-            productHeight = availableHeight
-            productWidth = productHeight * productRatio
-            if (productWidth > availableWidth) {
-                productWidth = availableWidth
-                productHeight = productWidth / productRatio
-            }
-
-            left = (availableWidth - productWidth) / 2f + (width * 0.03f)
-            top = (height - productHeight) / 2f
+            val studioW = width * 0.58f
+            availableWidth = studioW * 0.95f
+            availableHeight = height * 0.88f
+            centerX = width * 0.30f
+            centerY = height * 0.50f
         } else {
             val headerOffset = if (currentState.showStoreName && currentState.storeName.isNotEmpty()) height * 0.12f else height * 0.03f
-            val cardMargin = width * 0.04f
-            val cardHeight = height * 0.26f
+            val cardMargin = width * 0.035f
+            val cardHeight = if (width == height) height * 0.21f else height * 0.175f
             val footerOffset = cardHeight + cardMargin + (height * 0.02f)
 
-            val availableWidth = width * 0.88f
-            val availableHeight = height - headerOffset - footerOffset
+            // 95% of template width
+            availableWidth = width * 0.95f
+            availableHeight = (height - headerOffset - footerOffset).coerceAtLeast(height * 0.4f) * 0.96f
+            centerX = width / 2f
+            centerY = headerOffset + (height - headerOffset - footerOffset) / 2f
+        }
 
-            productWidth = availableWidth
-            productHeight = productWidth / productRatio
-            if (productHeight > availableHeight) {
-                productHeight = availableHeight
-                productWidth = productHeight * productRatio
-            }
+        var productWidth = availableWidth
+        var productHeight = productWidth / productRatio
 
-            left = (width - productWidth) / 2f
-            top = headerOffset + (availableHeight - productHeight) / 2f
+        if (productHeight > availableHeight) {
+            productHeight = availableHeight
+            productWidth = productHeight * productRatio
         }
 
         val scaledWidth = productWidth * currentState.productScale
@@ -482,8 +458,8 @@ class EditorViewModel(
         val panXScaled = currentState.productOffsetX * scaleFactor
         val panYScaled = currentState.productOffsetY * scaleFactor
 
-        val destLeft = left + panXScaled + (productWidth - scaledWidth) / 2f
-        val destTop = top + panYScaled + (productHeight - scaledHeight) / 2f
+        val destLeft = centerX - (scaledWidth / 2f) + panXScaled
+        val destTop = centerY - (scaledHeight / 2f) + panYScaled
 
         val productBounds = RectF(
             destLeft,
@@ -492,27 +468,25 @@ class EditorViewModel(
             destTop + scaledHeight
         )
 
-        val subjectBBox = SegmentationHelper.findSubjectBoundingBox(foreground)
-        val origW = foreground.width.toFloat().coerceAtLeast(1f)
-        val origH = foreground.height.toFloat().coerceAtLeast(1f)
-        val tightLeft = destLeft + (subjectBBox.left / origW) * scaledWidth
-        val tightTop = destTop + (subjectBBox.top / origH) * scaledHeight
-        val tightRight = destLeft + (subjectBBox.right / origW) * scaledWidth
-        val tightBottom = destTop + (subjectBBox.bottom / origH) * scaledHeight
-        val tightProductBounds = RectF(tightLeft, tightTop, tightRight, tightBottom)
+        val tightProductBounds = productBounds
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
+        // Pure clean background
         canvas.drawColor(Color.WHITE)
 
+        // Draw Brand Wall or ST24 Logo Wall
         if (currentState.backgroundType == BackgroundType.BRAND_WALL && currentState.brandLogoBitmap != null) {
             drawBrandWall(canvas, width, height, currentState, tightProductBounds)
         } else if (currentState.backgroundType == BackgroundType.ST24_LOGO) {
             drawST24LogoWall(canvas, width, height, currentState, tightProductBounds)
         }
 
-        val filterPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val filterPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
+            isFilterBitmap = true
+            isDither = true
+        }
         canvas.drawBitmap(foreground, null, productBounds, filterPaint)
 
         when (currentState.templateStyle) {
@@ -1309,8 +1283,10 @@ class EditorViewModel(
         _state.update { it.copy(isLoading = true) }
         
         viewModelScope.launch(Dispatchers.IO) {
-            // Render high-resolution product card canvas where largest dimension is 3000px
-            val highResBitmap = renderCardCanvas(currentState, targetMaxDim = 3000)
+            // Render high-resolution product card canvas upscaled to exactly 3000px max dimension
+            val targetMaxDim = 3000
+
+            val highResBitmap = renderCardCanvas(currentState, targetMaxDim = targetMaxDim)
                 ?: currentState.finalBitmap
                 
             if (highResBitmap == null) {
@@ -1320,7 +1296,7 @@ class EditorViewModel(
                 return@launch
             }
             
-            // 1. Save to app internal storage
+            // 1. Save to app internal storage (100% Lossless PNG)
             val file = File(applicationContext.filesDir, "product_${System.currentTimeMillis()}.png")
             FileOutputStream(file).use { out ->
                 highResBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
@@ -1340,7 +1316,7 @@ class EditorViewModel(
             withContext(Dispatchers.Main) {
                 Toast.makeText(
                     applicationContext,
-                    "Карточка сохранена в галерею в высоком разрешении (3000px)",
+                    "Карточка сохранена в галерею (3000px)",
                     Toast.LENGTH_LONG
                 ).show()
                 _state.update { it.copy(isLoading = false) }

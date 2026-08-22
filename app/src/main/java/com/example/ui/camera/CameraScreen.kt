@@ -163,10 +163,15 @@ fun CameraScreen(
                                             it.setSurfaceProvider(previewView.surfaceProvider)
                                         }
 
-                                    // ImageCapture with safe memory size (1920x1080/4K target rather than raw 108MP)
+                                    val captureResolutionSelector = ResolutionSelector.Builder()
+                                        .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                                        .build()
+
+                                    // ImageCapture configured for maximum sensor resolution (12MP/48MP/64MP/108MP) with zero compression loss
                                     val capture = ImageCapture.Builder()
-                                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                                        .setJpegQuality(95)
+                                        .setResolutionSelector(captureResolutionSelector)
+                                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                                        .setJpegQuality(100)
                                         .build()
                                     imageCapture = capture
 
@@ -608,10 +613,10 @@ private fun takePhotoWithHdrEnhancement(
                                 rawBitmap
                             }
 
-                            val file = File(context.cacheDir, "temp_capture_${System.currentTimeMillis()}.jpg")
+                            val file = File(context.cacheDir, "temp_capture_${System.currentTimeMillis()}.png")
                             withContext(Dispatchers.IO) {
                                 FileOutputStream(file).use { out ->
-                                    finalBitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                                    finalBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
                                 }
                             }
 
@@ -622,10 +627,10 @@ private fun takePhotoWithHdrEnhancement(
                             Log.e("CameraScreen", "Error during HDR processing coroutine", e)
                             // Fallback to saving rawBitmap directly
                             try {
-                                val file = File(context.cacheDir, "temp_capture_${System.currentTimeMillis()}.jpg")
+                                val file = File(context.cacheDir, "temp_capture_${System.currentTimeMillis()}.png")
                                 withContext(Dispatchers.IO) {
                                     FileOutputStream(file).use { out ->
-                                        rawBitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                                        rawBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
                                     }
                                 }
                                 withContext(Dispatchers.Main) {
@@ -661,25 +666,11 @@ private fun imageProxyToBitmap(image: ImageProxy): Bitmap? {
         val bytes = ByteArray(buffer.remaining())
         buffer.get(bytes)
 
-        // Memory-safe downsample decode if incoming photo is excessively large (> 2560px)
-        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
-
-        val maxDim = 2560
-        var sampleSize = 1
-        val w = boundsOptions.outWidth
-        val h = boundsOptions.outHeight
-        if (w > maxDim || h > maxDim) {
-            val halfW = w / 2
-            val halfH = h / 2
-            while ((halfW / sampleSize) >= maxDim || (halfH / sampleSize) >= maxDim) {
-                sampleSize *= 2
-            }
-        }
-
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
+            inSampleSize = 1
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inPremultiplied = true
+            inDither = true
         }
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions) ?: return null
 

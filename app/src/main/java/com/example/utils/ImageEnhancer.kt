@@ -21,27 +21,12 @@ object ImageEnhancer {
      */
     suspend fun enhanceImage(bitmap: Bitmap, isHdrNightEnabled: Boolean = true): Bitmap = withContext(Dispatchers.Default) {
         try {
-            // Memory guard: Ensure bitmap is processed safely without OOM
-            val origWidth = bitmap.width
-            val origHeight = bitmap.height
-
-            // Max computational working dimension: 2560px (high-res studio grade)
-            val maxWorkingDim = 2560
-            val workingBitmap = if (origWidth > maxWorkingDim || origHeight > maxWorkingDim) {
-                val scale = min(maxWorkingDim.toFloat() / origWidth, maxWorkingDim.toFloat() / origHeight)
-                val newW = (origWidth * scale).toInt()
-                val newH = (origHeight * scale).toInt()
-                Bitmap.createScaledBitmap(bitmap, newW, newH, true)
-            } else {
-                bitmap
-            }
-
-            val width = workingBitmap.width
-            val height = workingBitmap.height
+            val width = bitmap.width
+            val height = bitmap.height
             val size = width * height
             
             val pixels = IntArray(size)
-            workingBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
             // 1. Analyze Luminance Distribution & Histogram
             var sumLuma = 0.0
@@ -79,8 +64,8 @@ object ImageEnhancer {
                 toneLut[v] = (contrasted * 255.0).toInt().coerceIn(0, 255)
             }
 
-            // Apply Tone Mapping & Vibrance
-            for (i in 0 until size) {
+            // Apply Tone Mapping & Vibrance in parallel across pixel chunks
+            java.util.stream.IntStream.range(0, size).parallel().forEach { i ->
                 val p = pixels[i]
                 val a = Color.alpha(p)
                 var r = Color.red(p)
@@ -136,7 +121,7 @@ object ImageEnhancer {
         val kernelSum = kernelSize.toFloat()
 
         // Horizontal Box Blur pass
-        for (y in 0 until height) {
+        java.util.stream.IntStream.range(0, height).parallel().forEach { y ->
             val yOffset = y * width
             var rSum = 0; var gSum = 0; var bSum = 0
             for (i in -radius..radius) {
@@ -163,7 +148,7 @@ object ImageEnhancer {
         }
 
         // Vertical Box Blur pass
-        for (x in 0 until width) {
+        java.util.stream.IntStream.range(0, width).parallel().forEach { x ->
             var rSum = 0; var gSum = 0; var bSum = 0
             for (i in -radius..radius) {
                 val py = i.coerceIn(0, height - 1)
@@ -194,7 +179,7 @@ object ImageEnhancer {
         val coringThreshold = 4 // ignore minor differences to avoid grain
         val output = IntArray(size)
 
-        for (i in 0 until size) {
+        java.util.stream.IntStream.range(0, size).parallel().forEach { i ->
             val orig = pixels[i]
             val blur = blurred[i]
 

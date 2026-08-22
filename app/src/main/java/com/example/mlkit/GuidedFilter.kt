@@ -1,123 +1,135 @@
 package com.example.mlkit
 
-import android.graphics.Color
-import kotlin.math.abs
-import kotlin.math.exp
-import kotlin.math.min
+import kotlin.math.max
 
 object GuidedFilter {
 
-    private val expLUT = FloatArray(255 * 3 + 1) { i ->
-        exp(-i.toFloat() / 35.0f)
+    /**
+     * Physically Correct Guided Image Filter (Kaiming He et al.).
+     * Guided by original photo intensity I_i, calculates edge-aware mask q_i:
+     * q_i = a_k * I_i + b_k
+     * where a_k = cov_k(I, p) / (var_k(I) + eps) and b_k = mean(p)_k - a_k * mean(I)_k.
+     */
+    fun filter(
+        pixels: IntArray,
+        mask: FloatArray,
+        w: Int,
+        h: Int,
+        radius: Int = 4,
+        eps: Float = 1e-3f
+    ): FloatArray {
+        val size = w * h
+        if (size == 0) return FloatArray(0)
+
+        // 1. Extract Guide Image Intensity I in [0, 1] from original photo
+        val I = FloatArray(size)
+        for (i in 0 until size) {
+            val px = pixels[i]
+            val r = (px shr 16 and 0xFF) / 255f
+            val g = (px shr 8 and 0xFF) / 255f
+            val b = (px and 0xFF) / 255f
+            I[i] = 0.299f * r + 0.587f * g + 0.114f * b
+        }
+
+        val p = mask
+
+        // 2. Compute means in local window omega_k via fast O(1) box filter
+        val r = maxOf(1, radius)
+        val meanI = boxFilter(I, w, h, r)
+        val meanP = boxFilter(p, w, h, r)
+
+        // 3. Compute covariance cov(I, p) and variance var(I)
+        val Ip = FloatArray(size) { i -> I[i] * p[i] }
+        val II = FloatArray(size) { i -> I[i] * I[i] }
+
+        val meanIp = boxFilter(Ip, w, h, r)
+        val meanII = boxFilter(II, w, h, r)
+
+        val covIp = FloatArray(size) { i -> meanIp[i] - meanI[i] * meanP[i] }
+        val varI = FloatArray(size) { i -> meanII[i] - meanI[i] * meanI[i] }
+
+        // 4. Calculate linear transform coefficients a_k and b_k
+        val a = FloatArray(size) { i ->
+            covIp[i] / (maxOf(0f, varI[i]) + eps)
+        }
+        val b = FloatArray(size) { i ->
+            meanP[i] - a[i] * meanI[i]
+        }
+
+        // 5. Average coefficients over windows: meanA and meanB
+        val meanA = boxFilter(a, w, h, r)
+        val meanB = boxFilter(b, w, h, r)
+
+        // 6. Compute output mask q_i = meanA_i * I_i + meanB_i
+        val q = FloatArray(size) { i ->
+            (meanA[i] * I[i] + meanB[i]).coerceIn(0f, 1f)
+        }
+
+        return q
     }
 
     /**
-     * Color-Aware Joint Bilateral Matting Refinement.
-     * Snaps mask edges smoothly to physical 3D RGB color gradients of the source image.
-     * Guarantees natural organic object curves with subpixel anti-aliased borders.
+     * Fast O(1) per pixel 2D Box Filter using 1D horizontal & vertical sliding accumulator passes.
      */
-    fun filter(pixels: IntArray, mask: FloatArray, w: Int, h: Int, radius: Int = 2, eps: Float = 1e-4f): FloatArray {
+    fun boxFilter(src: FloatArray, w: Int, h: Int, r: Int): FloatArray {
         val size = w * h
-        val result = FloatArray(size)
+        if (size == 0) return FloatArray(0)
 
-        // 1. Smooth Alpha Contrast Curve (Smoothstep)
-        // Maps mask smoothly: <0.08 -> 0.0, >0.82 -> 1.0, preserving subpixel smooth transition zone
-        val smoothedMask = FloatArray(size)
-        val isBoundary = BooleanArray(size)
+        val temp = FloatArray(size)
+        val dest = FloatArray(size)
 
-        for (i in 0 until size) {
-            val v = mask[i]
-            val sVal = when {
-                v >= 0.82f -> 1.0f
-                v <= 0.08f -> 0.0f
-                else -> {
-                    val norm = (v - 0.08f) / 0.74f
-                    norm * norm * (3.0f - 2.0f * norm)
-                }
-            }
-            smoothedMask[i] = sVal
-        }
-
-        // 2. Identify active edge boundary pixels (where alpha transitions smoothly)
-        for (y in 0 until h) {
+        // Horizontal pass
+        java.util.stream.IntStream.range(0, h).parallel().forEach { y ->
             val yOff = y * w
+            var sum = 0f
+            val rClamped = r.coerceAtMost(w - 1)
+            
+            for (dx in -rClamped..rClamped) {
+                val x = dx.coerceIn(0, w - 1)
+                sum += src[yOff + x]
+            }
+
             for (x in 0 until w) {
-                val idx = yOff + x
-                val v = smoothedMask[idx]
-                if (v > 0.01f && v < 0.99f) {
-                    isBoundary[idx] = true
-                    for (dy in -1..1) {
-                        val ny = y + dy
-                        if (ny !in 0 until h) continue
-                        val nYOff = ny * w
-                        for (dx in -1..1) {
-                            val nx = x + dx
-                            if (nx in 0 until w) {
-                                isBoundary[nYOff + nx] = true
-                            }
-                        }
-                    }
+                val leftBoundary = (x - r).coerceAtLeast(0)
+                val rightBoundary = (x + r).coerceAtMost(w - 1)
+                val windowLen = rightBoundary - leftBoundary + 1
+                temp[yOff + x] = sum / windowLen
+
+                if (x < w - 1) {
+                    val nextAdd = (x + r + 1).coerceAtMost(w - 1)
+                    val prevRem = (x - r).coerceAtLeast(0)
+                    sum += src[yOff + nextAdd] - src[yOff + prevRem]
                 }
             }
         }
 
-        // 3. Perform Joint Color-Aware Bilateral Filter on boundary pixels
-        val spatialLUT = floatArrayOf(1.0f, 0.70f, 0.35f)
+        // Vertical pass
+        java.util.stream.IntStream.range(0, w).parallel().forEach { x ->
+            var sum = 0f
+            val rClamped = r.coerceAtMost(h - 1)
 
-        for (y in 0 until h) {
-            val yOff = y * w
-            for (x in 0 until w) {
-                val idx = yOff + x
+            for (dy in -rClamped..rClamped) {
+                val y = dy.coerceIn(0, h - 1)
+                sum += temp[y * w + x]
+            }
 
-                if (!isBoundary[idx]) {
-                    result[idx] = smoothedMask[idx]
-                    continue
+            for (y in 0 until h) {
+                val topBoundary = (y - r).coerceAtLeast(0)
+                val bottomBoundary = (y + r).coerceAtMost(h - 1)
+                val windowLen = bottomBoundary - topBoundary + 1
+                dest[y * w + x] = sum / windowLen
+
+                if (y < h - 1) {
+                    val nextAdd = (y + r + 1).coerceAtMost(h - 1)
+                    val prevRem = (y - r).coerceAtLeast(0)
+                    sum += temp[nextAdd * w + x] - temp[prevRem * w + x]
                 }
-
-                val cI = pixels[idx]
-                val rI = Color.red(cI)
-                val gI = Color.green(cI)
-                val bI = Color.blue(cI)
-
-                var weightedAlphaSum = 0.0f
-                var totalWeight = 0.0f
-
-                for (dy in -2..2) {
-                    val ny = y + dy
-                    if (ny !in 0 until h) continue
-                    val nYOff = ny * w
-                    val sWeightY = spatialLUT[abs(dy)]
-
-                    for (dx in -2..2) {
-                        val nx = x + dx
-                        if (nx !in 0 until w) continue
-
-                        val sWeightX = spatialLUT[abs(dx)]
-                        val spatialW = sWeightY * sWeightX
-
-                        val nIdx = nYOff + nx
-                        val cJ = pixels[nIdx]
-                        val rJ = Color.red(cJ)
-                        val gJ = Color.green(cJ)
-                        val bJ = Color.blue(cJ)
-
-                        val colorDiff = abs(rI - rJ) + abs(gI - gJ) + abs(bI - bJ)
-                        val colorW = expLUT[min(255 * 3, colorDiff)]
-
-                        val combinedW = spatialW * colorW
-
-                        weightedAlphaSum += smoothedMask[nIdx] * combinedW
-                        totalWeight += combinedW
-                    }
-                }
-
-                val refinedAlpha = if (totalWeight > 0.0001f) (weightedAlphaSum / totalWeight) else smoothedMask[idx]
-                result[idx] = refinedAlpha.coerceIn(0.0f, 1.0f)
             }
         }
 
-        return result
+        return dest
     }
 }
+
 
 

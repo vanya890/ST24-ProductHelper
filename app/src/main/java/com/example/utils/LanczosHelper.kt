@@ -30,7 +30,7 @@ object LanczosHelper {
         src.getPixels(srcPixels, 0, srcWidth, 0, 0, srcWidth, srcHeight)
 
         // Horizontal pass
-        for (y in 0 until srcHeight) {
+        java.util.stream.IntStream.range(0, srcHeight).parallel().forEach { y ->
             for (x in 0 until dstWidth) {
                 val srcX = (x + 0.5f) / scaleX - 0.5f
                 val startX = floor((srcX - 3).toDouble()).toInt()
@@ -75,7 +75,7 @@ object LanczosHelper {
         val dstPixels = IntArray(dstWidth * dstHeight)
 
         // Vertical pass
-        for (x in 0 until dstWidth) {
+        java.util.stream.IntStream.range(0, dstWidth).parallel().forEach { x ->
             for (y in 0 until dstHeight) {
                 val srcY = (y + 0.5f) / scaleY - 0.5f
                 val startY = floor((srcY - 3).toDouble()).toInt()
