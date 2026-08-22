@@ -668,6 +668,82 @@ private fun EditorControls(
     }
     
     Spacer(modifier = Modifier.height(12.dp))
+
+    // 3.5 Вычислительная фотография (AI)
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text("ВЫЧИСЛИТЕЛЬНАЯ ФОТОГРАФИЯ (AI)", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Text("Цветовой 3D LUT профиль:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            com.example.utils.StudioColorProfile.values().forEach { profile ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { viewModel.updateColorProfile(profile) }
+                        .padding(vertical = 6.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = state.selectedColorProfile == profile,
+                        onClick = { viewModel.updateColorProfile(profile) }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(profile.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text(profile.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Удаление бликов и вспышек", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Убирает белые пересветы со вспышки с сохранением структуры материала", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(
+                    checked = state.isSpecularRemovalEnabled,
+                    onCheckedChange = { viewModel.toggleSpecularRemoval(it) }
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Двусторонняя фильтрация шума", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Переносит чистую текстуру Guide-кадра без шумов на края товара", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(
+                    checked = state.isCrossBilateralEnabled,
+                    onCheckedChange = { viewModel.toggleCrossBilateral(it) }
+                )
+            }
+        }
+    }
+    
+    Spacer(modifier = Modifier.height(12.dp))
     
     // 4. Product Info Text Fields
     Surface(

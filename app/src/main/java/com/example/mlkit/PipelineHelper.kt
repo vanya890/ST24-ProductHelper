@@ -43,16 +43,16 @@ object PipelineHelper {
 
         // 3. Step 2: Guided Image Filter with upscaled original image as guide
         val radius = max(4, max(targetW, targetH) / 100)
-        val guidedMask = GuidedFilter.filter(upscaledCropPixels, upscaledMask, targetW, targetH, radius, 1e-3f)
+        val guidedMask = GuidedFilter.filter(upscaledCropPixels, upscaledMask, targetW, targetH, radius, 0.01f)
 
-        // 4. Step 1 & 3: Edge Extension (Unpremultiply & Core Laplace Diffusion)
-        val cleanPixels = ForegroundEstimator.estimate(upscaledCropPixels, guidedMask, targetW, targetH, erosionRadius = 3)
+        // 4. Clean Contour & Anti-Aliasing (removes fur/noise)
+        val cleanMask = segmentationHelper.smoothAndCleanContour(guidedMask, targetW, targetH)
 
-        // 5. Step 4: Non-linear Alpha Compression (Smoothstep)
-        val finalAlpha = segmentationHelper.compressAlphaSmoothstep(guidedMask, 0.10f, 0.90f)
+        // 5. Step 1 & 3: Edge Extension (Unpremultiply & Core Laplace Diffusion)
+        val cleanPixels = ForegroundEstimator.estimate(upscaledCropPixels, cleanMask, targetW, targetH, erosionRadius = 3)
 
-        // 6. Step 5: Final Composite
-        return composite(cleanPixels, finalAlpha, targetW, targetH)
+        // 6. Final Composite
+        return composite(cleanPixels, cleanMask, targetW, targetH)
     }
     
     private fun composite(cleanPixels: IntArray, mask: FloatArray, w: Int, h: Int): Bitmap {

@@ -163,6 +163,15 @@ fun CameraScreen(
                                             it.setSurfaceProvider(previewView.surfaceProvider)
                                         }
 
+                                    val analysis = ImageAnalysis.Builder()
+                                        .setResolutionSelector(
+                                            ResolutionSelector.Builder()
+                                                .setResolutionStrategy(ResolutionStrategy(Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
+                                                .build()
+                                        )
+                                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                        .build()
+
                                     val captureResolutionSelector = ResolutionSelector.Builder()
                                         .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
                                         .build()
@@ -187,11 +196,39 @@ fun CameraScreen(
                                         baseCameraSelector
                                     }
 
+                                    val motionDetector = com.example.utils.MotionAndSharpnessDetector(ctx)
+                                    motionDetector.startListening()
+                                    
+                                    analysis.setAnalyzer(executor) { image ->
+                                        val bitmap = imageProxyToBitmap(image)
+                                        if (bitmap != null) {
+                                            val sharpness = motionDetector.computeLaplacianSharpness(bitmap)
+                                            if (!isCapturing && isHdrEnabled && motionDetector.isAtSharpnessPeakAndSteady(sharpness)) {
+                                                isCapturing = true
+                                                takePhotoWithHdrEnhancement(
+                                                    imageCapture = imageCapture!!,
+                                                    executor = executor,
+                                                    context = ctx,
+                                                    isHdrNightEnabled = isHdrEnabled,
+                                                    onImageSaved = { uri ->
+                                                        isCapturing = false
+                                                        onImageCaptured(uri.toString())
+                                                    },
+                                                    onError = {
+                                                        isCapturing = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        image.close()
+                                    }
+
                                     cameraProvider.unbindAll()
                                     val camera = cameraProvider.bindToLifecycle(
                                         lifecycleOwner,
                                         cameraSelector,
                                         preview,
+                                        analysis,
                                         capture
                                     )
                                     cameraControl = camera.cameraControl

@@ -64,13 +64,13 @@ object ImageEnhancer {
                 toneLut[v] = (contrasted * 255.0).toInt().coerceIn(0, 255)
             }
 
-            // Apply Tone Mapping & Vibrance in parallel across pixel chunks
-            java.util.stream.IntStream.range(0, size).parallel().forEach { i ->
+            // Apply Tone Mapping & Vibrance in direct loop
+            for (i in 0 until size) {
                 val p = pixels[i]
-                val a = Color.alpha(p)
-                var r = Color.red(p)
-                var g = Color.green(p)
-                var b = Color.blue(p)
+                val a = (p ushr 24) and 0xFF
+                var r = (p ushr 16) and 0xFF
+                var g = (p ushr 8) and 0xFF
+                var b = p and 0xFF
 
                 // Tone mapping
                 r = toneLut[r]
@@ -89,7 +89,7 @@ object ImageEnhancer {
                     b = (b + (b - avg) * vibFactor).toInt().coerceIn(0, 255)
                 }
 
-                pixels[i] = Color.argb(a, r, g, b)
+                pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
 
             // 2. Micro-contrast & Unsharp Masking for crisp textures
@@ -179,22 +179,28 @@ object ImageEnhancer {
         val coringThreshold = 4 // ignore minor differences to avoid grain
         val output = IntArray(size)
 
-        java.util.stream.IntStream.range(0, size).parallel().forEach { i ->
+        for (i in 0 until size) {
             val orig = pixels[i]
             val blur = blurred[i]
 
-            val oR = Color.red(orig); val oG = Color.green(orig); val oB = Color.blue(orig)
-            val bR = Color.red(blur); val bG = Color.green(blur); val bB = Color.blue(blur)
+            val oA = (orig ushr 24) and 0xFF
+            val oR = (orig ushr 16) and 0xFF
+            val oG = (orig ushr 8) and 0xFF
+            val oB = orig and 0xFF
+
+            val bR = (blur ushr 16) and 0xFF
+            val bG = (blur ushr 8) and 0xFF
+            val bB = blur and 0xFF
 
             val dR = oR - bR
             val dG = oG - bG
             val dB = oB - bB
 
-            val nR = if (kotlin.math.abs(dR) > coringThreshold) (oR + dR * amount).toInt().coerceIn(0, 255) else oR
-            val nG = if (kotlin.math.abs(dG) > coringThreshold) (oG + dG * amount).toInt().coerceIn(0, 255) else oG
-            val nB = if (kotlin.math.abs(dB) > coringThreshold) (oB + dB * amount).toInt().coerceIn(0, 255) else oB
+            val nR = if (kotlin.math.abs(dR) > coringThreshold) (oR + (dR * amount).toInt()).coerceIn(0, 255) else oR
+            val nG = if (kotlin.math.abs(dG) > coringThreshold) (oG + (dG * amount).toInt()).coerceIn(0, 255) else oG
+            val nB = if (kotlin.math.abs(dB) > coringThreshold) (oB + (dB * amount).toInt()).coerceIn(0, 255) else oB
 
-            output[i] = Color.argb(Color.alpha(orig), nR, nG, nB)
+            output[i] = (oA shl 24) or (nR shl 16) or (nG shl 8) or nB
         }
 
         return output

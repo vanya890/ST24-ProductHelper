@@ -21,15 +21,17 @@ object GuidedFilter {
         val size = w * h
         if (size == 0) return FloatArray(0)
 
-        // 1. Extract Guide Image Intensity I in [0, 1] from original photo
-        val I = FloatArray(size)
+        // 1. Extract Guide Image Intensity I in [0, 1] from original photo with 3x3 noise reduction
+        val rawI = FloatArray(size)
         for (i in 0 until size) {
             val px = pixels[i]
             val r = (px shr 16 and 0xFF) / 255f
             val g = (px shr 8 and 0xFF) / 255f
             val b = (px and 0xFF) / 255f
-            I[i] = 0.299f * r + 0.587f * g + 0.114f * b
+            rawI[i] = 0.299f * r + 0.587f * g + 0.114f * b
         }
+        // Denoise guide image slightly (radius 1) so camera sensor grain does not transfer to alpha
+        val I = boxFilter(rawI, w, h, 1)
 
         val p = mask
 
@@ -49,8 +51,9 @@ object GuidedFilter {
         val varI = FloatArray(size) { i -> meanII[i] - meanI[i] * meanI[i] }
 
         // 4. Calculate linear transform coefficients a_k and b_k
+        val safeEps = maxOf(eps, 0.005f)
         val a = FloatArray(size) { i ->
-            covIp[i] / (maxOf(0f, varI[i]) + eps)
+            covIp[i] / (maxOf(0f, varI[i]) + safeEps)
         }
         val b = FloatArray(size) { i ->
             meanP[i] - a[i] * meanI[i]
