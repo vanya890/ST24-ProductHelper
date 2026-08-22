@@ -45,10 +45,11 @@ object LanczosHelper {
                     weightSum += weight
 
                     val pixel = srcPixels[y * srcWidth + clampedX]
-                    val alpha = Color.alpha(pixel)
-                    val red = Color.red(pixel)
-                    val green = Color.green(pixel)
-                    val blue = Color.blue(pixel)
+                    val alpha = Color.alpha(pixel).toFloat()
+                    val alphaFactor = alpha / 255f
+                    val red = Color.red(pixel) * alphaFactor
+                    val green = Color.green(pixel) * alphaFactor
+                    val blue = Color.blue(pixel) * alphaFactor
 
                     a += alpha * weight
                     r += red * weight
@@ -57,12 +58,17 @@ object LanczosHelper {
                 }
 
                 val invSum = if (abs(weightSum) > 1e-5f) 1f / weightSum else 1f
-                val fa = (a * invSum).toInt().coerceIn(0, 255)
-                val fr = (r * invSum).toInt().coerceIn(0, 255)
-                val fg = (g * invSum).toInt().coerceIn(0, 255)
-                val fb = (b * invSum).toInt().coerceIn(0, 255)
+                val fa = (a * invSum).coerceIn(0f, 255f)
+                val frRaw = r * invSum
+                val fgRaw = g * invSum
+                val fbRaw = b * invSum
 
-                tempPixels[y * dstWidth + x] = Color.argb(fa, fr, fg, fb)
+                val faFactor = fa / 255f
+                val fr = if (faFactor > 1e-4f) (frRaw / faFactor).toInt().coerceIn(0, 255) else 0
+                val fg = if (faFactor > 1e-4f) (fgRaw / faFactor).toInt().coerceIn(0, 255) else 0
+                val fb = if (faFactor > 1e-4f) (fbRaw / faFactor).toInt().coerceIn(0, 255) else 0
+
+                tempPixels[y * dstWidth + x] = Color.argb(fa.toInt().coerceIn(0, 255), fr, fg, fb)
             }
         }
 
@@ -84,10 +90,11 @@ object LanczosHelper {
                     weightSum += weight
 
                     val pixel = tempPixels[clampedY * dstWidth + x]
-                    val alpha = Color.alpha(pixel)
-                    val red = Color.red(pixel)
-                    val green = Color.green(pixel)
-                    val blue = Color.blue(pixel)
+                    val alpha = Color.alpha(pixel).toFloat()
+                    val alphaFactor = alpha / 255f
+                    val red = Color.red(pixel) * alphaFactor
+                    val green = Color.green(pixel) * alphaFactor
+                    val blue = Color.blue(pixel) * alphaFactor
 
                     a += alpha * weight
                     r += red * weight
@@ -96,12 +103,17 @@ object LanczosHelper {
                 }
 
                 val invSum = if (abs(weightSum) > 1e-5f) 1f / weightSum else 1f
-                val fa = (a * invSum).toInt().coerceIn(0, 255)
-                val fr = (r * invSum).toInt().coerceIn(0, 255)
-                val fg = (g * invSum).toInt().coerceIn(0, 255)
-                val fb = (b * invSum).toInt().coerceIn(0, 255)
+                val fa = (a * invSum).coerceIn(0f, 255f)
+                val frRaw = r * invSum
+                val fgRaw = g * invSum
+                val fbRaw = b * invSum
 
-                dstPixels[y * dstWidth + x] = Color.argb(fa, fr, fg, fb)
+                val faFactor = fa / 255f
+                val fr = if (faFactor > 1e-4f) (frRaw / faFactor).toInt().coerceIn(0, 255) else 0
+                val fg = if (faFactor > 1e-4f) (fgRaw / faFactor).toInt().coerceIn(0, 255) else 0
+                val fb = if (faFactor > 1e-4f) (fbRaw / faFactor).toInt().coerceIn(0, 255) else 0
+
+                dstPixels[y * dstWidth + x] = Color.argb(fa.toInt().coerceIn(0, 255), fr, fg, fb)
             }
         }
 

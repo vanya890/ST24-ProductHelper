@@ -3,13 +3,18 @@ package com.example.utils
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import java.util.EnumMap
 
 object QrCodeHelper {
     fun generateQrCode(text: String, size: Int = 512): Bitmap? {
         if (text.isEmpty()) return null
         return try {
-            val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
+            val hints = EnumMap<EncodeHintType, Any>(EncodeHintType::class.java).apply {
+                put(EncodeHintType.MARGIN, 0)
+            }
+            val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
             val width = bitMatrix.width
             val height = bitMatrix.height
             val pixels = IntArray(width * height)
@@ -27,3 +32,4 @@ object QrCodeHelper {
         }
     }
 }
+

@@ -61,6 +61,9 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+  androidResources {
+    noCompress.add("tflite")
+  }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -122,6 +125,9 @@ dependencies {
   implementation(libs.retrofit)
   implementation(libs.mlkit.subject.segmentation)
   implementation(libs.zxing)
+  implementation("org.tensorflow:tensorflow-lite:2.16.1")
+  implementation("org.tensorflow:tensorflow-lite-api:2.16.1")
+
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -140,4 +146,9 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+}
+
+// Automatically run SegmentationBenchmarkSuite during assembleDebug task
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("testDebugUnitTest")
 }

@@ -71,6 +71,7 @@ fun AppNavigation() {
             
             val factory = object : ViewModelProvider.Factory {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    @Suppress("UNCHECKED_CAST")
                     return EditorViewModel(repository, application) as T
                 }
             }
@@ -95,6 +96,7 @@ fun AppNavigation() {
             
             val factory = object : ViewModelProvider.Factory {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    @Suppress("UNCHECKED_CAST")
                     return GalleryViewModel(repository) as T
                 }
             }

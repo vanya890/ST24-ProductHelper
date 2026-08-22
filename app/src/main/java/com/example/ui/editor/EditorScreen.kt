@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -68,10 +69,17 @@ fun EditorScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                     }
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.toggleLock() }) {
+                        Icon(
+                            imageVector = if (state.isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = if (state.isLocked) "Разблокировать стиль" else "Заблокировать стиль",
+                            tint = if (state.isLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = { viewModel.resetProductPosition() }) {
                         Icon(Icons.Default.CenterFocusStrong, contentDescription = "По центру и масштабировать")
                     }
@@ -210,6 +218,140 @@ private fun EditorControls(
     viewModel: EditorViewModel,
     launcher: androidx.activity.compose.ManagedActivityResultLauncher<String, Uri?>
 ) {
+    if (state.isLocked) {
+        // Locked Mode Banner
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Стиль заблокирован автором",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        "Формат ${if (state.format == AspectRatioFormat.PORTRAIT_9_16) "9:16" else state.format.name}, шаблон и логотип настроены автоматически. Измените только Название и Цену.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                IconButton(onClick = { viewModel.toggleLock(false) }) {
+                    Icon(
+                        Icons.Default.LockOpen,
+                        contentDescription = "Разблокировать",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Product Info Form (Only Name and Price in Locked Mode)
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text("ИНФОРМАЦИЯ О ТОВАРЕ", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                // Product Name
+                OutlinedTextField(
+                    value = state.name,
+                    onValueChange = { viewModel.updateName(it) },
+                    label = { Text("Название товара") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Price
+                OutlinedTextField(
+                    value = state.price,
+                    onValueChange = { viewModel.updatePrice(it) },
+                    label = { Text("Цена") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    singleLine = true
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        return
+    }
+
+    // Unlocked Mode Banner
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.LockOpen,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Режим мастера (настройки открыты)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "Настройте формат 9:16, логотип и слайдеры, затем заблокируйте стиль для обычных пользователей.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
+                )
+            }
+            Spacer(modifier = Modifier.width(6.dp))
+            Button(
+                onClick = { viewModel.toggleLock(true) },
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text("Заблокировать", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
     // 1. Template Style
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,

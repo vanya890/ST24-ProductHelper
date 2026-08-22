@@ -1,5 +1,6 @@
 package com.example.ui.editor
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -13,9 +14,13 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.caverock.androidsvg.SVG
@@ -43,6 +48,8 @@ data class EditorState(
     val originalImageUri: String = "",
     val foregroundBitmap: Bitmap? = null,
     val finalBitmap: Bitmap? = null,
+    
+    val isLocked: Boolean = false,
     
     val showName: Boolean = true,
     val name: String = "Название товара",
@@ -94,23 +101,101 @@ class EditorViewModel(
     private val _state = MutableStateFlow(EditorState())
     val state: StateFlow<EditorState> = _state.asStateFlow()
 
+    private fun savePresetToPrefs() {
+        val state = _state.value
+        val prefs = applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putBoolean("is_locked", state.isLocked)
+            putString("preset_format", state.format.name)
+            putString("preset_template_style", state.templateStyle.name)
+            putString("preset_background_type", state.backgroundType.name)
+            putFloat("preset_logo_size", state.brandLogoSize)
+            putFloat("preset_logo_spacing", state.brandLogoSpacing)
+            putFloat("preset_logo_offset_x", state.brandLogoOffsetX)
+            putFloat("preset_logo_offset_y", state.brandLogoOffsetY)
+            putInt("preset_logo_skip", state.brandLogoSkip)
+            putFloat("preset_logo_halo_radius", state.brandLogoHaloRadius)
+            putFloat("preset_logo_halo_intensity", state.brandLogoHaloIntensity)
+            putBoolean("preset_is_checkerboard", state.isCheckerboard)
+            putString("last_store_name", state.storeName)
+            putBoolean("preset_show_store_name", state.showStoreName)
+            putString("last_phone", state.phone)
+            putBoolean("preset_show_phone", state.showPhone)
+            putString("last_link", state.link)
+            putBoolean("preset_show_link", state.showLink)
+            putBoolean("preset_show_name", state.showName)
+            putBoolean("preset_show_price", state.showPrice)
+            apply()
+        }
+    }
+
+    fun toggleLock(locked: Boolean? = null) {
+        val newLock = locked ?: !_state.value.isLocked
+        _state.update { it.copy(isLocked = newLock) }
+        savePresetToPrefs()
+        val msg = if (newLock) {
+            "Стиль заблокирован! Пользователям доступны только Название и Цена."
+        } else {
+            "Настройки стиля разблокированы."
+        }
+        Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+    }
+
     fun init(imageUri: String) {
         val prefs = applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE)
+        val savedIsLocked = prefs.getBoolean("is_locked", false)
+        val savedFormatStr = prefs.getString("preset_format", AspectRatioFormat.PORTRAIT_9_16.name)
+        val savedFormat = try { AspectRatioFormat.valueOf(savedFormatStr!!) } catch (e: Exception) { AspectRatioFormat.PORTRAIT_9_16 }
+        
+        val savedStyleStr = prefs.getString("preset_template_style", TemplateStyle.ST24_DARK.name)
+        val savedStyle = try { TemplateStyle.valueOf(savedStyleStr!!) } catch (e: Exception) { TemplateStyle.ST24_DARK }
+
+        val savedBgStr = prefs.getString("preset_background_type", BackgroundType.WHITE.name)
+        val savedBgType = try { BackgroundType.valueOf(savedBgStr!!) } catch (e: Exception) { BackgroundType.WHITE }
+
+        var savedLogoBitmap: Bitmap? = null
+        val logoFile = File(applicationContext.filesDir, "saved_brand_logo.png")
+        if (logoFile.exists()) {
+            try {
+                savedLogoBitmap = BitmapFactory.decodeFile(logoFile.absolutePath)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
         _state.update { 
             it.copy(
                 originalImageUri = imageUri, 
                 isLoading = true,
+                isLocked = savedIsLocked,
+                format = savedFormat,
+                templateStyle = savedStyle,
+                backgroundType = savedBgType,
+                brandLogoBitmap = savedLogoBitmap,
+                brandLogoSize = prefs.getFloat("preset_logo_size", 120f),
+                brandLogoSpacing = prefs.getFloat("preset_logo_spacing", 60f),
+                brandLogoOffsetX = prefs.getFloat("preset_logo_offset_x", 0f),
+                brandLogoOffsetY = prefs.getFloat("preset_logo_offset_y", 0f),
+                brandLogoSkip = prefs.getInt("preset_logo_skip", 1),
+                brandLogoHaloRadius = prefs.getFloat("preset_logo_halo_radius", 180f),
+                brandLogoHaloIntensity = prefs.getFloat("preset_logo_halo_intensity", 1.0f),
+                isCheckerboard = prefs.getBoolean("preset_is_checkerboard", true),
                 name = prefs.getString("last_name", "Название товара") ?: "Название товара",
                 price = prefs.getString("last_price", "999 руб.") ?: "999 руб.",
                 link = prefs.getString("last_link", "https://stroy-materiali-24.ru") ?: "https://stroy-materiali-24.ru",
+                showLink = prefs.getBoolean("preset_show_link", true),
                 storeName = prefs.getString("last_store_name", "STROY-MATERIALI-24") ?: "STROY-MATERIALI-24",
-                phone = prefs.getString("last_phone", "+7 (926) 163-75-07") ?: "+7 (926) 163-75-07"
+                showStoreName = prefs.getBoolean("preset_show_store_name", true),
+                phone = prefs.getString("last_phone", "+7 (926) 163-75-07") ?: "+7 (926) 163-75-07",
+                showPhone = prefs.getBoolean("preset_show_phone", true),
+                showName = prefs.getBoolean("preset_show_name", true),
+                showPrice = prefs.getBoolean("preset_show_price", true)
             ) 
         }
         viewModelScope.launch {
-            val bitmap = loadBitmap(imageUri)
+            val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { loadBitmap(imageUri) }
             if (bitmap != null) {
-                val rawForeground = SegmentationHelper.segmentProduct(bitmap) ?: bitmap
+                val rawForeground = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { SegmentationHelper.segmentProduct(bitmap, applicationContext) } ?: bitmap
                 val foreground = SegmentationHelper.enhanceStudioColorSpace(rawForeground)
                 _state.update { it.copy(foregroundBitmap = foreground, isLoading = false) }
                 resetProductPosition()
@@ -132,76 +217,97 @@ class EditorViewModel(
 
     fun updateStoreName(storeName: String) {
         _state.update { it.copy(storeName = storeName) }
-        applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE).edit().putString("last_store_name", storeName).apply()
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun toggleStoreName(show: Boolean) {
         _state.update { it.copy(showStoreName = show) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
     fun updatePhone(phone: String) {
         _state.update { it.copy(phone = phone) }
-        applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE).edit().putString("last_phone", phone).apply()
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun togglePhone(show: Boolean) {
         _state.update { it.copy(showPhone = show) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
     fun updateTemplateStyle(style: TemplateStyle) {
         _state.update { it.copy(templateStyle = style) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
     fun updateName(name: String) {
         _state.update { it.copy(name = name) }
-        applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE).edit().putString("last_name", name).apply()
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun toggleName(show: Boolean) {
         _state.update { it.copy(showName = show) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
     fun updatePrice(price: String) {
         _state.update { it.copy(price = price) }
-        applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE).edit().putString("last_price", price).apply()
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun togglePrice(show: Boolean) {
         _state.update { it.copy(showPrice = show) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
     fun updateLink(link: String) {
         _state.update { it.copy(link = link) }
-        applicationContext.getSharedPreferences("product_prefs", Context.MODE_PRIVATE).edit().putString("last_link", link).apply()
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun toggleLink(show: Boolean) {
         _state.update { it.copy(showLink = show) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun setFormat(format: AspectRatioFormat) {
         _state.update { it.copy(format = format) }
+        savePresetToPrefs()
         resetProductPosition()
     }
 
     fun setBackgroundType(type: BackgroundType) {
         _state.update { it.copy(backgroundType = type) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
     fun setBrandLogo(bitmap: Bitmap?) {
+        if (bitmap != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val logoFile = File(applicationContext.filesDir, "saved_brand_logo.png")
+                    FileOutputStream(logoFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
         _state.update { it.copy(brandLogoBitmap = bitmap, backgroundType = BackgroundType.BRAND_WALL) }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
     
@@ -227,6 +333,7 @@ class EditorViewModel(
                 brandLogoHaloIntensity = haloIntensity
             ) 
         }
+        savePresetToPrefs()
         updateFinalBitmap()
     }
 
@@ -306,124 +413,133 @@ class EditorViewModel(
         updateFinalBitmap()
     }
 
-    private fun getCanvasDimensions(format: AspectRatioFormat, ogWidth: Int, ogHeight: Int): Pair<Int, Int> {
+    private fun getCanvasDimensions(format: AspectRatioFormat, ogWidth: Int, ogHeight: Int, targetMaxDim: Int = 1920): Pair<Int, Int> {
         return when (format) {
-            AspectRatioFormat.SQUARE_1_1 -> Pair(1080, 1080)
-            AspectRatioFormat.PORTRAIT_9_16 -> Pair(1080, 1920)
-            AspectRatioFormat.LANDSCAPE_16_9 -> Pair(1920, 1080)
+            AspectRatioFormat.SQUARE_1_1 -> Pair(targetMaxDim, targetMaxDim)
+            AspectRatioFormat.PORTRAIT_9_16 -> Pair((targetMaxDim * 9f / 16f).toInt(), targetMaxDim)
+            AspectRatioFormat.LANDSCAPE_16_9 -> Pair(targetMaxDim, (targetMaxDim * 9f / 16f).toInt())
             AspectRatioFormat.ORIGINAL -> {
-                val maxDim = 1920f
-                if (ogWidth >= ogHeight && ogWidth > maxDim) {
+                val maxDim = targetMaxDim.toFloat()
+                if (ogWidth >= ogHeight && ogWidth > 0) {
                     Pair(maxDim.toInt(), (maxDim * ogHeight / ogWidth).toInt())
-                } else if (ogHeight > ogWidth && ogHeight > maxDim) {
+                } else if (ogHeight > ogWidth && ogHeight > 0) {
                     Pair((maxDim * ogWidth / ogHeight).toInt(), maxDim.toInt())
                 } else {
-                    Pair(ogWidth, ogHeight)
+                    Pair(targetMaxDim, targetMaxDim)
                 }
             }
         }
     }
 
-    fun updateFinalBitmap() {
-        val currentState = _state.value
-        val foreground = currentState.foregroundBitmap ?: return
-        
-        viewModelScope.launch(Dispatchers.Default) {
-            val (width, height) = getCanvasDimensions(currentState.format, foreground.width, foreground.height)
-            val isLandscape = width > height
-            val productRatio = foreground.width.toFloat() / foreground.height.toFloat()
+    private fun renderCardCanvas(currentState: EditorState, targetMaxDim: Int = 1920): Bitmap? {
+        val foreground = currentState.foregroundBitmap ?: return null
+        val (width, height) = getCanvasDimensions(currentState.format, foreground.width, foreground.height, targetMaxDim)
+        val isLandscape = width > height
+        val productRatio = foreground.width.toFloat() / foreground.height.toFloat()
 
-            // 1. Calculate Product Destination Bounds
-            var productWidth: Float
-            var productHeight: Float
-            val left: Float
-            val top: Float
+        var productWidth: Float
+        var productHeight: Float
+        val left: Float
+        val top: Float
 
-            if (isLandscape) {
-                val availableWidth = width * 0.58f
-                val availableHeight = height * 0.85f
+        if (isLandscape) {
+            val availableWidth = width * 0.58f
+            val availableHeight = height * 0.85f
 
-                productHeight = availableHeight
-                productWidth = productHeight * productRatio
-                if (productWidth > availableWidth) {
-                    productWidth = availableWidth
-                    productHeight = productWidth / productRatio
-                }
-
-                left = (availableWidth - productWidth) / 2f + (width * 0.03f)
-                top = (height - productHeight) / 2f
-            } else {
-                val headerOffset = if (currentState.showStoreName && currentState.storeName.isNotEmpty()) height * 0.12f else height * 0.03f
-                val cardMargin = width * 0.04f
-                val cardHeight = height * 0.26f
-                val footerOffset = cardHeight + cardMargin + (height * 0.02f)
-
-                val availableWidth = width * 0.88f
-                val availableHeight = height - headerOffset - footerOffset
-
+            productHeight = availableHeight
+            productWidth = productHeight * productRatio
+            if (productWidth > availableWidth) {
                 productWidth = availableWidth
                 productHeight = productWidth / productRatio
-                if (productHeight > availableHeight) {
-                    productHeight = availableHeight
-                    productWidth = productHeight * productRatio
-                }
-
-                left = (width - productWidth) / 2f
-                top = headerOffset + (availableHeight - productHeight) / 2f
             }
 
-            val scaledWidth = productWidth * currentState.productScale
-            val scaledHeight = productHeight * currentState.productScale
+            left = (availableWidth - productWidth) / 2f + (width * 0.03f)
+            top = (height - productHeight) / 2f
+        } else {
+            val headerOffset = if (currentState.showStoreName && currentState.storeName.isNotEmpty()) height * 0.12f else height * 0.03f
+            val cardMargin = width * 0.04f
+            val cardHeight = height * 0.26f
+            val footerOffset = cardHeight + cardMargin + (height * 0.02f)
 
-            val destLeft = left + currentState.productOffsetX + (productWidth - scaledWidth) / 2f
-            val destTop = top + currentState.productOffsetY + (productHeight - scaledHeight) / 2f
+            val availableWidth = width * 0.88f
+            val availableHeight = height - headerOffset - footerOffset
 
-            val productBounds = RectF(
-                destLeft,
-                destTop,
-                destLeft + scaledWidth,
-                destTop + scaledHeight
-            )
-
-            val subjectBBox = SegmentationHelper.findSubjectBoundingBox(foreground)
-            val origW = foreground.width.toFloat().coerceAtLeast(1f)
-            val origH = foreground.height.toFloat().coerceAtLeast(1f)
-            val tightLeft = destLeft + (subjectBBox.left / origW) * scaledWidth
-            val tightTop = destTop + (subjectBBox.top / origH) * scaledHeight
-            val tightRight = destLeft + (subjectBBox.right / origW) * scaledWidth
-            val tightBottom = destTop + (subjectBBox.bottom / origH) * scaledHeight
-            val tightProductBounds = RectF(tightLeft, tightTop, tightRight, tightBottom)
-
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            
-            // 2. Draw base background
-            canvas.drawColor(Color.WHITE)
-            
-            if (currentState.backgroundType == BackgroundType.BRAND_WALL && currentState.brandLogoBitmap != null) {
-                drawBrandWall(canvas, width, height, currentState, tightProductBounds)
-            } else if (currentState.backgroundType == BackgroundType.ST24_LOGO) {
-                drawST24LogoWall(canvas, width, height, currentState, tightProductBounds)
+            productWidth = availableWidth
+            productHeight = productWidth / productRatio
+            if (productHeight > availableHeight) {
+                productHeight = availableHeight
+                productWidth = productHeight * productRatio
             }
 
-            // 3. Draw high-quality foreground product
-            val filterPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            canvas.drawBitmap(foreground, null, productBounds, filterPaint)
-            
-            // 4. Draw Template Overlays (with strict non-overflow block CSS-like layout)
-            when (currentState.templateStyle) {
-                TemplateStyle.ST24_DARK -> drawST24DarkOverlay(canvas, width, height, currentState)
-                TemplateStyle.MODERN_LIGHT -> drawModernLightOverlay(canvas, width, height, currentState)
-                TemplateStyle.CLASSIC -> drawClassicOverlay(canvas, width, height, currentState)
+            left = (width - productWidth) / 2f
+            top = headerOffset + (availableHeight - productHeight) / 2f
+        }
+
+        val scaledWidth = productWidth * currentState.productScale
+        val scaledHeight = productHeight * currentState.productScale
+
+        val scaleFactor = max(width, height) / 1920f
+        val panXScaled = currentState.productOffsetX * scaleFactor
+        val panYScaled = currentState.productOffsetY * scaleFactor
+
+        val destLeft = left + panXScaled + (productWidth - scaledWidth) / 2f
+        val destTop = top + panYScaled + (productHeight - scaledHeight) / 2f
+
+        val productBounds = RectF(
+            destLeft,
+            destTop,
+            destLeft + scaledWidth,
+            destTop + scaledHeight
+        )
+
+        val subjectBBox = SegmentationHelper.findSubjectBoundingBox(foreground)
+        val origW = foreground.width.toFloat().coerceAtLeast(1f)
+        val origH = foreground.height.toFloat().coerceAtLeast(1f)
+        val tightLeft = destLeft + (subjectBBox.left / origW) * scaledWidth
+        val tightTop = destTop + (subjectBBox.top / origH) * scaledHeight
+        val tightRight = destLeft + (subjectBBox.right / origW) * scaledWidth
+        val tightBottom = destTop + (subjectBBox.bottom / origH) * scaledHeight
+        val tightProductBounds = RectF(tightLeft, tightTop, tightRight, tightBottom)
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        canvas.drawColor(Color.WHITE)
+
+        if (currentState.backgroundType == BackgroundType.BRAND_WALL && currentState.brandLogoBitmap != null) {
+            drawBrandWall(canvas, width, height, currentState, tightProductBounds)
+        } else if (currentState.backgroundType == BackgroundType.ST24_LOGO) {
+            drawST24LogoWall(canvas, width, height, currentState, tightProductBounds)
+        }
+
+        val filterPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(foreground, null, productBounds, filterPaint)
+
+        when (currentState.templateStyle) {
+            TemplateStyle.ST24_DARK -> drawST24DarkOverlay(canvas, width, height, currentState)
+            TemplateStyle.MODERN_LIGHT -> drawModernLightOverlay(canvas, width, height, currentState)
+            TemplateStyle.CLASSIC -> drawClassicOverlay(canvas, width, height, currentState)
+        }
+
+        return bitmap
+    }
+
+    fun updateFinalBitmap() {
+        val currentState = _state.value
+        if (currentState.foregroundBitmap == null) return
+
+        viewModelScope.launch(Dispatchers.Default) {
+            val bitmap = renderCardCanvas(currentState, targetMaxDim = 1920)
+            if (bitmap != null) {
+                _state.update { it.copy(finalBitmap = bitmap) }
             }
-            
-            _state.update { it.copy(finalBitmap = bitmap) }
         }
     }
 
     private fun drawST24DarkOverlay(canvas: Canvas, width: Int, height: Int, state: EditorState) {
         val isLandscape = width > height
         val baseDim = min(width, height)
+        val scale = max(width, height) / 1920f
 
         // 1. Top Header with Premium Gradient & Pill Badge
         if (state.showStoreName && state.storeName.isNotEmpty()) {
@@ -452,7 +568,7 @@ class EditorViewModel(
             }
             val pillBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = 2f
+                strokeWidth = 2f * scale
                 color = Color.parseColor("#33FFFFFF")
             }
             val pillRect = RectF(pillX, pillY, pillX + pillW, pillY + pillH)
@@ -491,20 +607,20 @@ class EditorViewModel(
             cardTop = (height - cardHeight) / 2f
             cardBottom = cardTop + cardHeight
         } else {
-            cardHeight = if (width == height) (height * 0.21f).coerceIn(190f, 250f) else (height * 0.175f).coerceIn(190f, 310f)
+            cardHeight = if (width == height) (height * 0.21f).coerceIn(190f * scale, 250f * scale) else (height * 0.175f).coerceIn(190f * scale, 310f * scale)
             cardLeft = cardMargin
             cardRight = width - cardMargin
             cardBottom = height - cardMargin
             cardTop = cardBottom - cardHeight
         }
 
-        val cardRadius = 24f
+        val cardRadius = 24f * scale
         val cardRect = RectF(cardLeft, cardTop, cardRight, cardBottom)
 
         // Drop Shadow & Card Surface
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#55000000")
-            setShadowLayer(20f, 0f, 6f, Color.parseColor("#55000000"))
+            setShadowLayer(20f * scale, 0f, 6f * scale, Color.parseColor("#55000000"))
         }
         canvas.drawRoundRect(cardRect, cardRadius, cardRadius, shadowPaint)
 
@@ -514,7 +630,7 @@ class EditorViewModel(
         canvas.drawRoundRect(cardRect, cardRadius, cardRadius, cardPaint)
 
         // Orange Accent Left Bar
-        val accentWidth = 12f
+        val accentWidth = 12f * scale
         val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#FF9800")
         }
@@ -530,22 +646,38 @@ class EditorViewModel(
         var qrRight = 0f
 
         if (hasQr && hasPhone) {
-            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 48f)
-            val phoneTextSize = (cardHeight * 0.095f).coerceIn(16f, 30f)
-            val gap = 6f
+            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 40f * scale)
+            val gap = 6f * scale
+            
+            // Calculate phone size dynamically so it NEVER overflows card boundaries
+            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#FF9800")
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+            }
+            val maxPhoneW = qrBoxSize * 1.25f
+            var phoneTextSize = (cardHeight * 0.095f).coerceIn(14f * scale, 26f * scale)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f * scale) {
+                phoneTextSize -= 1f * scale
+                phonePaint.textSize = phoneTextSize
+            }
+
             val totalRightH = qrBoxSize + gap + phoneTextSize
             val rightStartY = cardTop + (cardHeight - totalRightH) / 2f
 
             val qrTop = rightStartY
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            // Generate QR code filling 95% of white box
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -555,28 +687,23 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrX, qrY, null)
             }
 
-            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#FF9800")
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                textSize = phoneTextSize
-            }
             val phoneCenterX = qrLeft + (qrBoxSize / 2f)
             val phoneBaseline = qrBottom + gap + phoneTextSize * 0.82f
             canvas.drawText(state.phone, phoneCenterX, phoneBaseline, phonePaint)
 
         } else if (hasQr) {
-            val qrBoxSize = cardHeight * 0.72f
+            val qrBoxSize = cardHeight * 0.70f
             val qrTop = cardTop + (cardHeight - qrBoxSize) / 2f
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -586,14 +713,19 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrX, qrY, null)
             }
         } else if (hasPhone) {
-            val phoneTextSize = (cardHeight * 0.12f).coerceIn(20f, 36f)
+            val maxPhoneW = (cardRight - cardLeft) * 0.45f
             val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#FF9800")
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.RIGHT
-                textSize = phoneTextSize
             }
-            val phoneRight = cardRight - (cardHeight * 0.15f)
+            var phoneTextSize = (cardHeight * 0.12f).coerceIn(16f, 32f)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f) {
+                phoneTextSize -= 1f
+                phonePaint.textSize = phoneTextSize
+            }
+            val phoneRight = cardRight - (cardHeight * 0.08f)
             val phoneY = cardTop + (cardHeight / 2f) + phoneTextSize * 0.35f
             canvas.drawText(state.phone, phoneRight, phoneY, phonePaint)
         }
@@ -614,15 +746,7 @@ class EditorViewModel(
             var currentSize = namePaint.textSize
             do {
                 namePaint.textSize = currentSize
-                staticLayout = StaticLayout(
-                    state.name,
-                    namePaint,
-                    textMaxWidth,
-                    Layout.Alignment.ALIGN_NORMAL,
-                    1.08f,
-                    0f,
-                    false
-                )
+                staticLayout = android.text.StaticLayout.Builder.obtain(state.name, 0, state.name.length, namePaint, textMaxWidth).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1.08f).setIncludePad(false).build()
                 currentSize -= 2f
             } while (staticLayout.height > (cardHeight * 0.46f) && currentSize > 16f)
         }
@@ -672,6 +796,7 @@ class EditorViewModel(
     private fun drawModernLightOverlay(canvas: Canvas, width: Int, height: Int, state: EditorState) {
         val isLandscape = width > height
         val baseDim = min(width, height)
+        val scale = max(width, height) / 1920f
 
         if (state.showStoreName && state.storeName.isNotEmpty()) {
             val headerTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -685,7 +810,7 @@ class EditorViewModel(
         }
 
         val cardMargin = width * 0.035f
-        val cardHeight = if (isLandscape) height * 0.82f else if (width == height) (height * 0.21f).coerceIn(190f, 250f) else (height * 0.175f).coerceIn(190f, 310f)
+        val cardHeight = if (isLandscape) height * 0.82f else if (width == height) (height * 0.21f).coerceIn(190f * scale, 250f * scale) else (height * 0.175f).coerceIn(190f * scale, 310f * scale)
         val cardLeft = if (isLandscape) width * 0.60f else cardMargin
         val cardRight = width - cardMargin
         val cardBottom = height - cardMargin
@@ -695,21 +820,21 @@ class EditorViewModel(
 
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#14000000")
-            setShadowLayer(20f, 0f, 6f, Color.parseColor("#14000000"))
+            setShadowLayer(20f * scale, 0f, 6f * scale, Color.parseColor("#14000000"))
         }
-        canvas.drawRoundRect(cardRect, 24f, 24f, shadowPaint)
+        canvas.drawRoundRect(cardRect, 24f * scale, 24f * scale, shadowPaint)
 
         val cardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#F8F9FA")
         }
-        canvas.drawRoundRect(cardRect, 24f, 24f, cardPaint)
+        canvas.drawRoundRect(cardRect, 24f * scale, 24f * scale, cardPaint)
 
-        val accentWidth = 10f
+        val accentWidth = 10f * scale
         val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#007AFF")
         }
         val accentRect = RectF(cardLeft, cardTop, cardLeft + accentWidth, cardBottom)
-        canvas.drawRoundRect(accentRect, 24f, 24f, accentPaint)
+        canvas.drawRoundRect(accentRect, 24f * scale, 24f * scale, accentPaint)
         canvas.drawRect(cardLeft + (accentWidth / 2f), cardTop, cardLeft + accentWidth, cardBottom, accentPaint)
 
         val hasQr = state.showLink && state.link.isNotEmpty()
@@ -719,22 +844,36 @@ class EditorViewModel(
         var qrRight = 0f
 
         if (hasQr && hasPhone) {
-            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 48f)
-            val phoneTextSize = (cardHeight * 0.095f).coerceIn(16f, 30f)
-            val gap = 6f
+            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 40f * scale)
+            val gap = 6f * scale
+
+            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#007AFF")
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+            }
+            val maxPhoneW = qrBoxSize * 1.25f
+            var phoneTextSize = (cardHeight * 0.095f).coerceIn(14f * scale, 26f * scale)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f * scale) {
+                phoneTextSize -= 1f * scale
+                phonePaint.textSize = phoneTextSize
+            }
+
             val totalRightH = qrBoxSize + gap + phoneTextSize
             val rightStartY = cardTop + (cardHeight - totalRightH) / 2f
 
             val qrTop = rightStartY
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -742,28 +881,23 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrLeft + (qrBoxSize - qr.width) / 2f, qrTop + (qrBoxSize - qr.height) / 2f, null)
             }
 
-            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#007AFF")
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                textSize = phoneTextSize
-            }
             val phoneCenterX = qrLeft + (qrBoxSize / 2f)
             val phoneBaseline = qrBottom + gap + phoneTextSize * 0.82f
             canvas.drawText(state.phone, phoneCenterX, phoneBaseline, phonePaint)
 
         } else if (hasQr) {
-            val qrBoxSize = cardHeight * 0.72f
+            val qrBoxSize = cardHeight * 0.70f
             val qrTop = cardTop + (cardHeight - qrBoxSize) / 2f
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -771,14 +905,19 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrLeft + (qrBoxSize - qr.width) / 2f, qrTop + (qrBoxSize - qr.height) / 2f, null)
             }
         } else if (hasPhone) {
-            val phoneTextSize = (cardHeight * 0.12f).coerceIn(20f, 36f)
+            val maxPhoneW = (cardRight - cardLeft) * 0.45f
             val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#007AFF")
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.RIGHT
-                textSize = phoneTextSize
             }
-            val phoneRight = cardRight - (cardHeight * 0.15f)
+            var phoneTextSize = (cardHeight * 0.12f).coerceIn(16f, 32f)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f) {
+                phoneTextSize -= 1f
+                phonePaint.textSize = phoneTextSize
+            }
+            val phoneRight = cardRight - (cardHeight * 0.08f)
             val phoneY = cardTop + (cardHeight / 2f) + phoneTextSize * 0.35f
             canvas.drawText(state.phone, phoneRight, phoneY, phonePaint)
         }
@@ -799,15 +938,7 @@ class EditorViewModel(
             var currentSize = namePaint.textSize
             do {
                 namePaint.textSize = currentSize
-                staticLayout = StaticLayout(
-                    state.name,
-                    namePaint,
-                    textMaxWidth,
-                    Layout.Alignment.ALIGN_NORMAL,
-                    1.08f,
-                    0f,
-                    false
-                )
+                staticLayout = android.text.StaticLayout.Builder.obtain(state.name, 0, state.name.length, namePaint, textMaxWidth).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1.08f).setIncludePad(false).build()
                 currentSize -= 2f
             } while (staticLayout.height > (cardHeight * 0.46f) && currentSize > 16f)
         }
@@ -857,6 +988,7 @@ class EditorViewModel(
     private fun drawClassicOverlay(canvas: Canvas, width: Int, height: Int, state: EditorState) {
         val isLandscape = width > height
         val baseDim = min(width, height)
+        val scale = max(width, height) / 1920f
 
         if (state.showStoreName && state.storeName.isNotEmpty()) {
             val hPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -869,7 +1001,7 @@ class EditorViewModel(
         }
 
         val cardMargin = width * 0.035f
-        val cardHeight = if (isLandscape) height * 0.82f else if (width == height) (height * 0.21f).coerceIn(190f, 250f) else (height * 0.175f).coerceIn(190f, 310f)
+        val cardHeight = if (isLandscape) height * 0.82f else if (width == height) (height * 0.21f).coerceIn(190f * scale, 250f * scale) else (height * 0.175f).coerceIn(190f * scale, 310f * scale)
         val cardLeft = if (isLandscape) width * 0.60f else cardMargin
         val cardRight = width - cardMargin
         val cardBottom = height - cardMargin
@@ -881,11 +1013,11 @@ class EditorViewModel(
         }
         val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = 2f
+            strokeWidth = 2f * scale
             color = Color.parseColor("#E0E0E0")
         }
-        canvas.drawRoundRect(cardRect, 20f, 20f, cardPaint)
-        canvas.drawRoundRect(cardRect, 20f, 20f, borderPaint)
+        canvas.drawRoundRect(cardRect, 20f * scale, 20f * scale, cardPaint)
+        canvas.drawRoundRect(cardRect, 20f * scale, 20f * scale, borderPaint)
 
         val hasQr = state.showLink && state.link.isNotEmpty()
         val hasPhone = state.showPhone && state.phone.isNotEmpty()
@@ -894,22 +1026,36 @@ class EditorViewModel(
         var qrRight = 0f
 
         if (hasQr && hasPhone) {
-            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 48f)
-            val phoneTextSize = (cardHeight * 0.095f).coerceIn(16f, 30f)
+            val qrBoxSize = (cardHeight * 0.58f).coerceAtMost(cardHeight - 40f)
             val gap = 6f
+
+            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#E91E63")
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+            }
+            val maxPhoneW = qrBoxSize * 1.25f
+            var phoneTextSize = (cardHeight * 0.095f).coerceIn(14f, 26f)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f) {
+                phoneTextSize -= 1f
+                phonePaint.textSize = phoneTextSize
+            }
+
             val totalRightH = qrBoxSize + gap + phoneTextSize
             val rightStartY = cardTop + (cardHeight - totalRightH) / 2f
 
             val qrTop = rightStartY
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F5") }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -917,28 +1063,23 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrLeft + (qrBoxSize - qr.width) / 2f, qrTop + (qrBoxSize - qr.height) / 2f, null)
             }
 
-            val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#E91E63")
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                textSize = phoneTextSize
-            }
             val phoneCenterX = qrLeft + (qrBoxSize / 2f)
             val phoneBaseline = qrBottom + gap + phoneTextSize * 0.82f
             canvas.drawText(state.phone, phoneCenterX, phoneBaseline, phonePaint)
 
         } else if (hasQr) {
-            val qrBoxSize = cardHeight * 0.72f
+            val qrBoxSize = cardHeight * 0.70f
             val qrTop = cardTop + (cardHeight - qrBoxSize) / 2f
             val qrBottom = qrTop + qrBoxSize
-            qrRight = cardRight - (cardHeight * 0.10f)
+            qrRight = cardRight - (cardHeight * 0.08f)
             qrLeft = qrRight - qrBoxSize
 
             var qrUrl = state.link
             if (!qrUrl.startsWith("http://") && !qrUrl.startsWith("https://")) {
                 qrUrl = "https://$qrUrl"
             }
-            val qr = QrCodeHelper.generateQrCode(qrUrl, (qrBoxSize * 0.94f).toInt())
+            val qrInnerSize = (qrBoxSize - 8f).toInt().coerceAtLeast(24)
+            val qr = QrCodeHelper.generateQrCode(qrUrl, qrInnerSize)
             if (qr != null) {
                 val qrBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F5") }
                 val qrBgRect = RectF(qrLeft, qrTop, qrLeft + qrBoxSize, qrBottom)
@@ -946,14 +1087,19 @@ class EditorViewModel(
                 canvas.drawBitmap(qr, qrLeft + (qrBoxSize - qr.width) / 2f, qrTop + (qrBoxSize - qr.height) / 2f, null)
             }
         } else if (hasPhone) {
-            val phoneTextSize = (cardHeight * 0.12f).coerceIn(20f, 36f)
+            val maxPhoneW = (cardRight - cardLeft) * 0.45f
             val phonePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#E91E63")
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.RIGHT
-                textSize = phoneTextSize
             }
-            val phoneRight = cardRight - (cardHeight * 0.15f)
+            var phoneTextSize = (cardHeight * 0.12f).coerceIn(16f, 32f)
+            phonePaint.textSize = phoneTextSize
+            while (phonePaint.measureText(state.phone) > maxPhoneW && phoneTextSize > 10f) {
+                phoneTextSize -= 1f
+                phonePaint.textSize = phoneTextSize
+            }
+            val phoneRight = cardRight - (cardHeight * 0.08f)
             val phoneY = cardTop + (cardHeight / 2f) + phoneTextSize * 0.35f
             canvas.drawText(state.phone, phoneRight, phoneY, phonePaint)
         }
@@ -973,15 +1119,7 @@ class EditorViewModel(
             var currentSize = namePaint.textSize
             do {
                 namePaint.textSize = currentSize
-                staticLayout = StaticLayout(
-                    state.name,
-                    namePaint,
-                    textMaxWidth,
-                    Layout.Alignment.ALIGN_NORMAL,
-                    1.08f,
-                    0f,
-                    false
-                )
+                staticLayout = android.text.StaticLayout.Builder.obtain(state.name, 0, state.name.length, namePaint, textMaxWidth).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1.08f).setIncludePad(false).build()
                 currentSize -= 2f
             } while (staticLayout.height > (cardHeight * 0.46f) && currentSize > 16f)
         }
@@ -1168,27 +1306,28 @@ class EditorViewModel(
 
     fun saveProduct(onComplete: () -> Unit) {
         val currentState = _state.value
-        val bitmap = currentState.finalBitmap ?: return
-        
         _state.update { it.copy(isLoading = true) }
         
         viewModelScope.launch(Dispatchers.IO) {
-            val maxDim = max(bitmap.width, bitmap.height)
-            val targetDim = 2400
-            
-            val finalToSave = if (maxDim != targetDim) {
-                val scale = targetDim.toFloat() / maxDim
-                val newW = (bitmap.width * scale).toInt()
-                val newH = (bitmap.height * scale).toInt()
-                LanczosHelper.resize(bitmap, newW, newH)
-            } else {
-                bitmap
+            // Render high-resolution product card canvas where largest dimension is 3000px
+            val highResBitmap = renderCardCanvas(currentState, targetMaxDim = 3000)
+                ?: currentState.finalBitmap
+                
+            if (highResBitmap == null) {
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(isLoading = false) }
+                }
+                return@launch
             }
             
+            // 1. Save to app internal storage
             val file = File(applicationContext.filesDir, "product_${System.currentTimeMillis()}.png")
             FileOutputStream(file).use { out ->
-                finalToSave.compress(Bitmap.CompressFormat.PNG, 100, out)
+                highResBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
+            
+            // 2. Save to Android system gallery (Pictures/ProductCards)
+            saveToDeviceGallery(applicationContext, highResBitmap, "ProductCard_${System.currentTimeMillis()}")
             
             val product = ProductEntity(
                 name = currentState.name,
@@ -1199,9 +1338,53 @@ class EditorViewModel(
             repository.insert(product)
             
             withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    applicationContext,
+                    "Карточка сохранена в галерею в высоком разрешении (3000px)",
+                    Toast.LENGTH_LONG
+                ).show()
                 _state.update { it.copy(isLoading = false) }
                 onComplete()
             }
+        }
+    }
+
+    private fun saveToDeviceGallery(context: Context, bitmap: Bitmap, fileName: String): Uri? {
+        val resolver = context.contentResolver
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, "$fileName.png")
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ProductCards")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                uri?.let { u ->
+                    resolver.openOutputStream(u)?.use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    contentValues.clear()
+                    contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(u, contentValues, null, null)
+                }
+                uri
+            } else {
+                val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                val cardFolder = File(imagesDir, "ProductCards").apply { if (!exists()) mkdirs() }
+                val imageFile = File(cardFolder, "$fileName.png")
+                FileOutputStream(imageFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DATA, imageFile.absolutePath)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                }
+                resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
     }
 }
